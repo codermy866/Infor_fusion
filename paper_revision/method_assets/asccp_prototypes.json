@@ -1,0 +1,32 @@
+[
+  {
+    "id": 0,
+    "name": "normal_or_hpv_negative_low_risk",
+    "description": "Normal or HPV-negative low-risk screening profile."
+  },
+  {
+    "id": 1,
+    "name": "hpv_positive_nilm_surveillance",
+    "description": "HPV-positive profile with negative cytology or surveillance-level risk."
+  },
+  {
+    "id": 2,
+    "name": "ascus_or_lsil_low_grade_abnormality",
+    "description": "Low-grade cytologic abnormality such as ASC-US or LSIL."
+  },
+  {
+    "id": 3,
+    "name": "asch_or_agc_high_risk_triage",
+    "description": "Atypical high-risk triage profile such as ASC-H or AGC."
+  },
+  {
+    "id": 4,
+    "name": "hsil_or_cin2plus_high_grade_lesion",
+    "description": "High-grade lesion profile consistent with HSIL or CIN2+ risk."
+  },
+  {
+    "id": 5,
+    "name": "cancer_suspicious_invasive_disease",
+    "description": "Cancer-suspicious profile requiring urgent diagnostic confirmation."
+  }
+]
