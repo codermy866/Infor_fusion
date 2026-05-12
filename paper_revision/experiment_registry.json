@@ -161,13 +161,13 @@
       "group_id": "coe_faithfulness",
       "priority": "highest",
       "substudies": [
-        "expert_evaluation",
+        "weak_trajectory_supervision",
         "evidence_removal",
         "evidence_swap_counterfactual",
         "failure_case_analysis"
       ],
       "required_outputs": [
-        "expert_rating_table",
+        "coe_supervision_ablation",
         "evidence_removal_table",
         "counterfactual_table",
         "failure_case_figure"

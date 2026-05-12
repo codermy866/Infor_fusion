@@ -507,6 +507,7 @@ def train_epoch(
             image_names=image_names,
             clinical_info=clinical_info,
             center_labels=center_labels,
+            labels=labels,
             clinical_features=clinical_features,  # 🔥 5.0新增
             return_loss_components=True,
             current_beta=current_beta
@@ -589,6 +590,11 @@ def train_epoch(
             L_modality_likelihood = outputs['loss_components']['L_modality_likelihood']
             lambda_modality_likelihood = getattr(config, 'lambda_modality_likelihood', 0.05)
             total_loss_batch = total_loss_batch + lambda_modality_likelihood * L_modality_likelihood
+
+        if 'L_coe' in outputs.get('loss_components', {}):
+            L_coe = outputs['loss_components']['L_coe']
+            lambda_coe = getattr(config, 'lambda_coe', 0.05)
+            total_loss_batch = total_loss_batch + lambda_coe * L_coe
         
         # 添加一致性损失
         if config.use_dual and 'L_consist' in outputs.get('loss_components', {}):
@@ -784,6 +790,7 @@ def validate(model, dataloader, criterion, device, epoch, config, log_print=None
                 image_names=image_names,  # 🔥 3.2改动
                 clinical_info=clinical_info,  # 🔥 3.2改动
                 center_labels=center_labels,
+                labels=labels,
                 clinical_features=clinical_features,
                 return_loss_components=True,  # 🔥 [FIX] 改为 True 以获取 Recall
                 current_beta=current_beta

@@ -2,31 +2,49 @@
   {
     "id": 0,
     "name": "normal_or_hpv_negative_low_risk",
-    "description": "Normal or HPV-negative low-risk screening profile."
+    "description": "Normal or HPV-negative low-risk screening profile.",
+    "asccp_category": "routine_screening_or_low_risk_surveillance",
+    "risk_level": "low",
+    "prototype_text": "Clinical prior category: routine screening or low-risk surveillance. HPV negative or no high-risk cytology. Expected posterior belief favors low-risk cervical status unless imaging provides contradictory evidence."
   },
   {
     "id": 1,
     "name": "hpv_positive_nilm_surveillance",
-    "description": "HPV-positive profile with negative cytology or surveillance-level risk."
+    "description": "HPV-positive profile with negative cytology or surveillance-level risk.",
+    "asccp_category": "hpv_positive_nilm_or_surveillance",
+    "risk_level": "intermediate",
+    "prototype_text": "Clinical prior category: HPV-positive screening profile with NILM or surveillance-level cytology. Expected posterior belief assigns elevated but non-definitive risk and requires image-based refinement."
   },
   {
     "id": 2,
     "name": "ascus_or_lsil_low_grade_abnormality",
-    "description": "Low-grade cytologic abnormality such as ASC-US or LSIL."
+    "description": "Low-grade cytologic abnormality such as ASC-US or LSIL.",
+    "asccp_category": "low_grade_cytology",
+    "risk_level": "low_to_intermediate",
+    "prototype_text": "Clinical prior category: low-grade cytologic abnormality such as ASC-US or LSIL. Expected posterior belief supports low-grade disease but remains sensitive to colposcopy and OCT evidence."
   },
   {
     "id": 3,
     "name": "asch_or_agc_high_risk_triage",
-    "description": "Atypical high-risk triage profile such as ASC-H or AGC."
+    "description": "Atypical high-risk triage profile such as ASC-H or AGC.",
+    "asccp_category": "high_risk_triage_cytology",
+    "risk_level": "high",
+    "prototype_text": "Clinical prior category: atypical high-risk triage result such as ASC-H or AGC. Expected posterior belief increases concern for clinically significant lesions and prioritizes confirmatory visual evidence."
   },
   {
     "id": 4,
     "name": "hsil_or_cin2plus_high_grade_lesion",
-    "description": "High-grade lesion profile consistent with HSIL or CIN2+ risk."
+    "description": "High-grade lesion profile consistent with HSIL or CIN2+ risk.",
+    "asccp_category": "hsil_or_cin2plus",
+    "risk_level": "high",
+    "prototype_text": "Clinical prior category: high-grade lesion profile consistent with HSIL or CIN2+ risk. Expected posterior belief favors high-grade cervical lesion when multimodal evidence is concordant."
   },
   {
     "id": 5,
     "name": "cancer_suspicious_invasive_disease",
-    "description": "Cancer-suspicious profile requiring urgent diagnostic confirmation."
+    "description": "Cancer-suspicious profile requiring urgent diagnostic confirmation.",
+    "asccp_category": "cancer_suspicious",
+    "risk_level": "very_high",
+    "prototype_text": "Clinical prior category: cancer-suspicious or invasive disease concern. Expected posterior belief places strong weight on urgent diagnostic confirmation and severe multimodal evidence."
   }
 ]

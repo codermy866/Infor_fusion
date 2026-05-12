@@ -46,7 +46,7 @@ class BioCOT_v3_2_Config:
     use_cross_attn: bool = True
     use_adaptive_gating: bool = True  # 3.1的优势：自适应模态门控
     use_vlm_retriever: bool = False  # 离线训练默认禁用在线Text Encoder加载
-    use_variational_reliability: bool = False
+    use_variational_reliability: bool = True
     use_center_aware_reliability: bool = True
     fusion_strategy: str = "gated"  # gated/equal/concat/late/cross_attention/variational
     direct_fusion_only: bool = False
@@ -54,6 +54,11 @@ class BioCOT_v3_2_Config:
     use_asccp_prior: bool = True
     use_modality_likelihood: bool = True
     use_coe_readout: bool = True
+    use_coe_supervision: bool = True
+    use_text_derived_asccp: bool = True
+    asccp_prototype_path: str = 'paper_revision/method_assets/asccp_prototypes.json'
+    asccp_text_model_name: Optional[str] = None
+    asccp_text_local_files_only: bool = True
     
     # 损失权重（3.1的优势：显式对齐）
     lambda_cls: float = 2.0      # 分类损失权重
@@ -99,6 +104,7 @@ class BioCOT_v3_2_Config:
     lambda_posterior_smooth: float = 0.01
     lambda_asccp_ot: float = 0.05
     lambda_modality_likelihood: float = 0.05
+    lambda_coe: float = 0.05
     
     # 训练配置
     batch_size: int = 4  # 🔧 降低batch size以避免显存溢出
