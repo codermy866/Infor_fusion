@@ -25,8 +25,14 @@ def main() -> None:
         print("No prediction files available for center-wise calibration.")
         return
 
+    modality_col = df["modality_setting"].astype(str) if "modality_setting" in df else pd.Series("none", index=df.index)
+    corruption_col = df["input_corruption"].astype(str) if "input_corruption" in df else pd.Series("none", index=df.index)
+    clean_df = df[modality_col.eq("none") & corruption_col.eq("none")].copy()
+    if clean_df.empty:
+        clean_df = df.copy()
+
     rows = []
-    for (method, run_id, seed), run_df in df.groupby(["method", "run_id", "seed"], dropna=False):
+    for (method, run_id, seed), run_df in clean_df.groupby(["method", "run_id", "seed"], dropna=False):
         source = run_df[run_df["split"] == "internal_validation"]
         threshold = select_threshold(source["y_true"], source["y_prob"]) if not source.empty else select_threshold(run_df["y_true"], run_df["y_prob"])
         external = run_df[run_df["split"] == "external_test"]
@@ -72,7 +78,8 @@ def main() -> None:
             index=False,
         )
 
-    missing = df[df.get("modality_setting", "none").astype(str) != "none"].copy()
+    modality_col = df["modality_setting"].astype(str) if "modality_setting" in df else pd.Series("none", index=df.index)
+    missing = df[modality_col != "none"].copy()
     if not missing.empty:
         rows = []
         for (method, setting), group in missing.groupby(["method", "modality_setting"], dropna=False):
@@ -96,6 +103,33 @@ def main() -> None:
         for col in ["auc", "sensitivity", "specificity", "npv", "ece", "brier"]:
             display[col] = display[col].map(lambda x: f"{x:.3f}")
         display.to_csv(TABLE_DIR / "missing_modality_robustness_metrics_formatted.csv", index=False)
+
+    corruption_col = df["input_corruption"].astype(str) if "input_corruption" in df else pd.Series("none", index=df.index)
+    corrupted = df[corruption_col != "none"].copy()
+    if not corrupted.empty:
+        rows = []
+        for (method, corruption), group in corrupted.groupby(["method", "input_corruption"], dropna=False):
+            metric = binary_metrics(group["y_true"], group["y_prob"])
+            rows.append(
+                {
+                    "method": method,
+                    "corruption": corruption,
+                    "severity": group["corruption_severity"].iloc[0] if "corruption_severity" in group else "",
+                    "n": metric.n,
+                    "auc": metric.auc,
+                    "sensitivity": metric.sensitivity,
+                    "specificity": metric.specificity,
+                    "npv": metric.npv,
+                    "ece": metric.ece,
+                    "brier": metric.brier,
+                }
+            )
+        corruption_table = pd.DataFrame(rows)
+        corruption_table.to_csv(TABLE_DIR / "input_corruption_robustness_metrics.csv", index=False)
+        display = corruption_table.copy()
+        for col in ["auc", "sensitivity", "specificity", "npv", "ece", "brier"]:
+            display[col] = display[col].map(lambda x: f"{x:.3f}")
+        display.to_csv(TABLE_DIR / "input_corruption_robustness_metrics_formatted.csv", index=False)
 
     print(f"Wrote center-wise calibration tables to {TABLE_DIR}")
 

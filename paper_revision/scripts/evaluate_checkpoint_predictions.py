@@ -12,7 +12,7 @@ import csv
 import importlib.util
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -147,6 +147,95 @@ def choose_missing_modalities(setting: str, batch_size: int, seed: int) -> List[
     raise ValueError(f"Unknown missing-modality setting: {setting}")
 
 
+def torch_generator(device: torch.device, seed: int) -> torch.Generator:
+    generator = torch.Generator(device=device.type if device.type == "cuda" else "cpu")
+    generator.manual_seed(int(seed))
+    return generator
+
+
+def token_mask(features: torch.Tensor, ratio: float, seed: int) -> torch.Tensor:
+    """Mask contiguous patient-level patch tokens for feature-cache corruption tests."""
+    if features.ndim < 3 or ratio <= 0:
+        return features
+    out = features.clone()
+    batch_size, token_count = out.shape[:2]
+    width = max(1, min(token_count, int(round(token_count * ratio))))
+    generator = torch_generator(out.device, seed)
+    for row in range(batch_size):
+        high = max(1, token_count - width + 1)
+        start = int(torch.randint(high, (1,), generator=generator, device=out.device).item())
+        out[row, start : start + width] = 0.0
+    return out
+
+
+def stripe_tokens(features: torch.Tensor, severity: float) -> torch.Tensor:
+    if features.ndim < 3:
+        return features
+    out = features.clone()
+    token_count = out.shape[1]
+    grid = int(round(token_count ** 0.5))
+    mask = torch.ones(token_count, device=out.device, dtype=out.dtype)
+    if grid * grid == token_count:
+        stripe_width = max(1, int(round(severity)))
+        stride = max(3, int(round(7 - severity)))
+        grid_mask = mask.view(grid, grid)
+        grid_mask[:, ::stride] = 0.0
+        if stripe_width > 1:
+            for offset in range(1, stripe_width):
+                grid_mask[:, offset::stride] = 0.0
+    else:
+        stride = max(3, int(round(8 - severity)))
+        mask[::stride] = 0.0
+    return out * mask.view(1, token_count, 1)
+
+
+def smooth_patch_features(features: torch.Tensor, severity: float) -> torch.Tensor:
+    if features.ndim < 3:
+        return features
+    blend = min(0.75, 0.18 * severity)
+    patient_mean = features.mean(dim=1, keepdim=True)
+    return (1.0 - blend) * features + blend * patient_mean
+
+
+def scale_shift_features(features: torch.Tensor, scale: float, shift_strength: float) -> torch.Tensor:
+    std = features.std(dim=tuple(range(1, features.ndim)), keepdim=True).clamp_min(1e-6)
+    return features * scale + shift_strength * std
+
+
+def apply_input_corruption(
+    oct_feats: torch.Tensor,
+    col_feats: torch.Tensor,
+    corruption: str,
+    severity: float,
+    seed: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Apply deterministic feature-space analogues of image corruption tests.
+
+    Formal runs use cached patient-level ViT patch features for speed and
+    auditability. These transformations mimic the expected downstream effects
+    of modality-specific image corruptions on the extracted patch-token space.
+    """
+    if corruption == "none":
+        return oct_feats, col_feats
+    severity = max(0.1, float(severity))
+    generator = torch_generator(oct_feats.device, seed)
+
+    if corruption == "colpo_blur":
+        return oct_feats, smooth_patch_features(col_feats, severity)
+    if corruption == "colpo_brightness":
+        return oct_feats, scale_shift_features(col_feats, scale=1.0 + 0.12 * severity, shift_strength=0.08 * severity)
+    if corruption == "colpo_occlusion":
+        return oct_feats, token_mask(col_feats, ratio=min(0.45, 0.10 * severity), seed=seed)
+    if corruption == "oct_speckle":
+        noise = torch.randn(oct_feats.shape, generator=generator, device=oct_feats.device, dtype=oct_feats.dtype)
+        return oct_feats * (1.0 + noise * (0.05 * severity)), col_feats
+    if corruption == "oct_stripe":
+        return stripe_tokens(oct_feats, severity), col_feats
+    if corruption == "oct_intensity":
+        return scale_shift_features(oct_feats, scale=1.0 - 0.08 * severity, shift_strength=-0.06 * severity), col_feats
+    raise ValueError(f"Unknown input corruption setting: {corruption}")
+
+
 def case_value(case, preferred: str, fallback: str, default: str = "") -> str:
     if preferred in case:
         value = case[preferred]
@@ -172,6 +261,20 @@ def main() -> None:
         default="none",
         choices=["none", "remove_oct", "remove_colposcopy", "remove_clinical_prior", "random_one", "random_two"],
     )
+    parser.add_argument(
+        "--input-corruption",
+        default="none",
+        choices=[
+            "none",
+            "colpo_blur",
+            "colpo_brightness",
+            "colpo_occlusion",
+            "oct_speckle",
+            "oct_stripe",
+            "oct_intensity",
+        ],
+    )
+    parser.add_argument("--corruption-severity", type=float, default=2.0)
     parser.add_argument("--output-dir", default=str(EXP_ROOT / "paper_revision" / "results" / "predictions"))
     parser.add_argument("--batch-size", type=int, default=None)
     args = parser.parse_args()
@@ -217,7 +320,12 @@ def main() -> None:
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    suffix = args.missing_modality if args.missing_modality != "none" else "full"
+    suffix_parts = []
+    if args.missing_modality != "none":
+        suffix_parts.append(args.missing_modality)
+    if args.input_corruption != "none":
+        suffix_parts.append(args.input_corruption)
+    suffix = "_".join(suffix_parts) if suffix_parts else "full"
     out_path = output_dir / f"{args.method}_run{args.run_id}_seed{args.seed}_{args.split}_{suffix}.csv"
 
     rows: List[Dict[str, object]] = []
@@ -250,6 +358,13 @@ def main() -> None:
                 )
             clinical_features = clinical_features_from_batch(batch, batch_size, device)
 
+            oct_feats, col_feats = apply_input_corruption(
+                oct_feats,
+                col_feats,
+                args.input_corruption,
+                args.corruption_severity,
+                args.seed + 1009 * (batch_idx + 1),
+            )
             missing = choose_missing_modalities(args.missing_modality, batch_size, args.seed + batch_idx)
             if any("oct" in item for item in missing):
                 oct_feats = oct_feats.clone()
@@ -276,6 +391,7 @@ def main() -> None:
                 clinical_info=clinical_info,
                 center_labels=centers,
                 clinical_features=clinical_features,
+                labels=labels,
                 return_loss_components=True,
                 current_beta=0.1,
             )
@@ -304,6 +420,8 @@ def main() -> None:
                         "y_true": int(labels_np[i]),
                         "y_prob": float(probs[i]),
                         "modality_setting": args.missing_modality,
+                        "input_corruption": args.input_corruption,
+                        "corruption_severity": float(args.corruption_severity) if args.input_corruption != "none" else "",
                         "reliability_oct": float(reliability_np["oct"][i]) if "oct" in reliability_np else "",
                         "reliability_colposcopy": float(reliability_np["colpo"][i]) if "colpo" in reliability_np else "",
                         "reliability_clinical_prior": float(reliability_np["clinical_prior"][i]) if "clinical_prior" in reliability_np else "",

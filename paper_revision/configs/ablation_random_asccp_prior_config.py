@@ -9,11 +9,11 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from paper_revision.configs.hydra_variational_config import HyDRAVariationalConfig
+from paper_revision.configs.all_center_patient_holdout_config import AllCenterPatientHoldoutHyDRAConfig
 
 
 @dataclass
-class AblationRandomASCCPPriorConfig(HyDRAVariationalConfig):
+class AblationRandomASCCPPriorConfig(AllCenterPatientHoldoutHyDRAConfig):
     experiment_name: str = "Ablation_RandomASCCPPrototypePrior"
     experiment_description: str = "HyDRA variational model with random trainable ASCCP prior anchors."
 
