@@ -786,6 +786,16 @@ class BioCOT_v3_2(nn.Module):
             nn.Dropout(dropout_rate),
             nn.GELU(),
         )
+        self.clinical_feature_projector = nn.Sequential(
+            nn.Linear(7, embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.GELU(),
+            nn.Dropout(dropout_rate * 0.5),
+            nn.Linear(embed_dim, embed_dim),
+            nn.LayerNorm(embed_dim),
+        )
+        self.clinical_prior_mix = nn.Parameter(torch.tensor(0.5))
+        self.clinical_prior_norm = nn.LayerNorm(embed_dim)
 
         # ============================================================
         # [PROFESSIONAL FIX] 深度对齐投影头 + 共享语义空间（3.1的优势）
@@ -1069,6 +1079,15 @@ class BioCOT_v3_2(nn.Module):
         # 🔥 5.0优势6：Text Adapter
         if self.text_adapter is not None:
             z_sem = self.text_adapter(z_sem)
+
+        if clinical_features is not None:
+            clinical_tensor = clinical_features.float()
+            if clinical_tensor.dim() == 1:
+                clinical_tensor = clinical_tensor.unsqueeze(0)
+            structured_prior = self.clinical_feature_projector(clinical_tensor)
+            clinical_scale = torch.clamp(self.clinical_prior_mix, min=0.0, max=1.0)
+            z_sem = self.clinical_prior_norm(z_sem + clinical_scale * structured_prior)
+            output["clinical_structured_prior"] = structured_prior
         
         output['z_sem'] = z_sem
         
