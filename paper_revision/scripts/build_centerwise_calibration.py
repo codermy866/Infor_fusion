@@ -25,8 +25,8 @@ def main() -> None:
         print("No prediction files available for center-wise calibration.")
         return
 
-    modality_col = df["modality_setting"].astype(str) if "modality_setting" in df else pd.Series("none", index=df.index)
-    corruption_col = df["input_corruption"].astype(str) if "input_corruption" in df else pd.Series("none", index=df.index)
+    modality_col = df["modality_setting"].fillna("none").astype(str) if "modality_setting" in df else pd.Series("none", index=df.index)
+    corruption_col = df["input_corruption"].fillna("none").astype(str) if "input_corruption" in df else pd.Series("none", index=df.index)
     clean_df = df[modality_col.eq("none") & corruption_col.eq("none")].copy()
     if clean_df.empty:
         clean_df = df.copy()
@@ -78,7 +78,7 @@ def main() -> None:
             index=False,
         )
 
-    modality_col = df["modality_setting"].astype(str) if "modality_setting" in df else pd.Series("none", index=df.index)
+    modality_col = df["modality_setting"].fillna("none").astype(str) if "modality_setting" in df else pd.Series("none", index=df.index)
     missing = df[modality_col != "none"].copy()
     if not missing.empty:
         rows = []
@@ -104,7 +104,7 @@ def main() -> None:
             display[col] = display[col].map(lambda x: f"{x:.3f}")
         display.to_csv(TABLE_DIR / "missing_modality_robustness_metrics_formatted.csv", index=False)
 
-    corruption_col = df["input_corruption"].astype(str) if "input_corruption" in df else pd.Series("none", index=df.index)
+    corruption_col = df["input_corruption"].fillna("none").astype(str) if "input_corruption" in df else pd.Series("none", index=df.index)
     corrupted = df[corruption_col != "none"].copy()
     if not corrupted.empty:
         rows = []

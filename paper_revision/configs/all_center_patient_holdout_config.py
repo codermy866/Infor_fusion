@@ -21,6 +21,7 @@ class AllCenterPatientHoldoutHyDRAConfig(FullPretrainedHyDRAConfig):
     num_centers: int = 5
 
     use_variational_reliability: bool = True
+    use_adaptive_gating: bool = False
     fusion_strategy: str = "variational"
     lambda_reliability_kl: float = 0.01
 
