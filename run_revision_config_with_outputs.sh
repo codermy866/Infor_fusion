@@ -73,6 +73,18 @@ for SETTING in remove_colposcopy remove_oct remove_clinical_prior random_one ran
     --missing-modality "$SETTING" 2>&1 | tee -a "$WRAPPER_LOG"
 done
 
+for CORRUPTION in colpo_blur colpo_brightness colpo_occlusion oct_speckle oct_stripe oct_intensity; do
+  "$PYTHON_BIN" paper_revision/scripts/evaluate_checkpoint_predictions.py \
+    --config "$CONFIG_PATH" \
+    --checkpoint "$CHECKPOINT" \
+    --split external_test \
+    --method "${METHOD}_${CORRUPTION}" \
+    --run_id "$RUN_ID" \
+    --seed "$SEED" \
+    --input-corruption "$CORRUPTION" \
+    --corruption-severity 2.0 2>&1 | tee -a "$WRAPPER_LOG"
+done
+
 "$PYTHON_BIN" paper_revision/scripts/build_centerwise_calibration.py 2>&1 | tee -a "$WRAPPER_LOG"
 
 echo "============================================================" | tee -a "$WRAPPER_LOG"
