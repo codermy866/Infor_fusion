@@ -23,6 +23,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import json
+import hashlib
 import numpy as np
 from typing import Dict, Tuple, Optional, List
 
@@ -296,8 +298,9 @@ class ASCCPPrototypePrior(nn.Module):
     """
     Discrete clinical-prior prototype manifold.
 
-    The prototype names are fixed and documented; embeddings are trainable
-    anchors used by a smooth OT-style prior matching surrogate.
+    Prototypes are initialized from structured guideline-style text descriptions
+    and then refined by a trainable residual. This keeps p(z|K) tied to the
+    clinical prior text while still allowing dataset-specific adaptation.
     """
 
     DEFAULT_PROTOTYPES = (
@@ -309,16 +312,138 @@ class ASCCPPrototypePrior(nn.Module):
         "cancer_suspicious_invasive_disease",
     )
 
-    def __init__(self, dim: int = 768, temperature: float = 0.15, prototype_names: Optional[Tuple[str, ...]] = None):
+    def __init__(
+        self,
+        dim: int = 768,
+        temperature: float = 0.15,
+        prototype_names: Optional[Tuple[str, ...]] = None,
+        prototype_path: Optional[str] = None,
+        text_model_name: Optional[str] = None,
+        use_text_derived_init: bool = True,
+        local_files_only: bool = True,
+    ):
         super().__init__()
-        self.prototype_names = tuple(prototype_names or self.DEFAULT_PROTOTYPES)
+        prototype_items = self._load_prototype_items(prototype_path, prototype_names)
+        self.prototype_names = tuple(item["name"] for item in prototype_items)
+        self.prototype_texts = tuple(item["text"] for item in prototype_items)
         self.temperature = temperature
-        self.prototype_embeddings = nn.Parameter(torch.randn(len(self.prototype_names), dim) * 0.02)
+        init_embeddings, init_source = self._build_text_embeddings(
+            self.prototype_texts,
+            dim=dim,
+            text_model_name=text_model_name,
+            use_text_derived_init=use_text_derived_init,
+            local_files_only=local_files_only,
+        )
+        self.register_buffer("prototype_text_embeddings", init_embeddings)
+        self.prototype_residual = nn.Parameter(torch.zeros_like(init_embeddings))
+        self.prototype_residual_scale = nn.Parameter(torch.tensor(0.10))
         self.prototype_norm = nn.LayerNorm(dim)
+        self.text_init_source = init_source
+
+    @classmethod
+    def _load_prototype_items(
+        cls,
+        prototype_path: Optional[str],
+        prototype_names: Optional[Tuple[str, ...]],
+    ) -> List[Dict[str, str]]:
+        if prototype_path:
+            path = Path(prototype_path)
+            if not path.is_absolute():
+                path = Path(__file__).resolve().parents[1] / path
+            if path.exists():
+                with path.open("r", encoding="utf-8") as handle:
+                    raw_items = json.load(handle)
+                items = []
+                for item in raw_items:
+                    name = str(item.get("name", "")).strip()
+                    if not name:
+                        continue
+                    description = str(item.get("description", "")).strip()
+                    prototype_text = str(item.get("prototype_text", "")).strip()
+                    category = str(item.get("asccp_category", "")).strip()
+                    risk = str(item.get("risk_level", "")).strip()
+                    text_parts = [part for part in [name, category, risk, description, prototype_text] if part]
+                    items.append({"name": name, "text": ". ".join(text_parts)})
+                if items:
+                    return items
+
+        names = tuple(prototype_names or cls.DEFAULT_PROTOTYPES)
+        return [{"name": name, "text": name.replace("_", " ")} for name in names]
+
+    @staticmethod
+    def _hash_text_embedding(text: str, dim: int) -> torch.Tensor:
+        values = torch.empty(dim, dtype=torch.float32)
+        seed = text.encode("utf-8")
+        offset = 0
+        counter = 0
+        while offset < dim:
+            digest = hashlib.sha256(seed + str(counter).encode("utf-8")).digest()
+            chunk = torch.tensor(list(digest), dtype=torch.float32) / 127.5 - 1.0
+            take = min(chunk.numel(), dim - offset)
+            values[offset : offset + take] = chunk[:take]
+            offset += take
+            counter += 1
+        return F.normalize(values, dim=0)
+
+    @classmethod
+    def _hash_text_embeddings(cls, texts: Tuple[str, ...], dim: int) -> torch.Tensor:
+        return torch.stack([cls._hash_text_embedding(text, dim) for text in texts], dim=0) * 0.02
+
+    @staticmethod
+    def _transformer_text_embeddings(
+        texts: Tuple[str, ...],
+        dim: int,
+        text_model_name: str,
+        local_files_only: bool,
+    ) -> Optional[torch.Tensor]:
+        try:
+            from transformers import AutoModel, AutoTokenizer
+
+            tokenizer = AutoTokenizer.from_pretrained(text_model_name, local_files_only=local_files_only)
+            encoder = AutoModel.from_pretrained(text_model_name, local_files_only=local_files_only)
+            encoder.eval()
+            with torch.no_grad():
+                inputs = tokenizer(
+                    list(texts),
+                    padding=True,
+                    truncation=True,
+                    max_length=128,
+                    return_tensors="pt",
+                )
+                outputs = encoder(**inputs)
+                if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
+                    emb = outputs.pooler_output
+                else:
+                    emb = outputs.last_hidden_state[:, 0, :]
+            if emb.shape[-1] > dim:
+                emb = emb[:, :dim]
+            elif emb.shape[-1] < dim:
+                emb = F.pad(emb, (0, dim - emb.shape[-1]))
+            return F.normalize(emb.float(), dim=-1) * 0.02
+        except Exception:
+            return None
+
+    @classmethod
+    def _build_text_embeddings(
+        cls,
+        texts: Tuple[str, ...],
+        dim: int,
+        text_model_name: Optional[str],
+        use_text_derived_init: bool,
+        local_files_only: bool,
+    ) -> Tuple[torch.Tensor, str]:
+        if use_text_derived_init and text_model_name:
+            transformer_embeddings = cls._transformer_text_embeddings(texts, dim, text_model_name, local_files_only)
+            if transformer_embeddings is not None:
+                return transformer_embeddings, "frozen_transformer_text"
+        if use_text_derived_init:
+            return cls._hash_text_embeddings(texts, dim), "deterministic_text_hash"
+        return torch.randn(len(texts), dim) * 0.02, "random_trainable"
 
     def forward(self, z: torch.Tensor) -> Dict[str, torch.Tensor]:
         z_norm = F.normalize(z, dim=-1)
-        prototypes = self.prototype_norm(self.prototype_embeddings)
+        residual_scale = torch.clamp(self.prototype_residual_scale, min=0.0, max=1.0)
+        prototypes = self.prototype_norm(self.prototype_text_embeddings + residual_scale * self.prototype_residual)
         proto_norm = F.normalize(prototypes, dim=-1)
         cost = 1.0 - torch.matmul(z_norm, proto_norm.t())
         assignment = F.softmax(-cost / max(self.temperature, 1e-6), dim=-1)
@@ -338,12 +463,15 @@ class ASCCPPrototypePrior(nn.Module):
 class ModalityLikelihoodDecoder(nn.Module):
     """Lightweight feature-space approximation to p(M | z, c)."""
 
-    def __init__(self, dim: int = 768, dropout: float = 0.1):
+    def __init__(self, dim: int = 768, num_centers: int = 5, center_aware: bool = True, dropout: float = 0.1):
         super().__init__()
+        self.center_aware = center_aware
+        self.center_embedding = nn.Embedding(num_centers, dim) if center_aware else None
+        in_dim = dim * 2 if center_aware else dim
         self.decoders = nn.ModuleDict(
             {
                 name: nn.Sequential(
-                    nn.Linear(dim, dim),
+                    nn.Linear(in_dim, dim),
                     nn.LayerNorm(dim),
                     nn.GELU(),
                     nn.Dropout(dropout),
@@ -353,8 +481,22 @@ class ModalityLikelihoodDecoder(nn.Module):
             }
         )
 
-    def forward(self, z: torch.Tensor, targets: Dict[str, torch.Tensor]) -> Dict[str, object]:
-        recon = {name: decoder(z) for name, decoder in self.decoders.items()}
+    def forward(
+        self,
+        z: torch.Tensor,
+        targets: Dict[str, torch.Tensor],
+        center_labels: Optional[torch.Tensor] = None,
+    ) -> Dict[str, object]:
+        if self.center_embedding is not None:
+            if center_labels is None:
+                center_context = torch.zeros_like(z)
+            else:
+                labels = center_labels.clamp(min=0, max=self.center_embedding.num_embeddings - 1)
+                center_context = self.center_embedding(labels)
+            decoder_input = torch.cat([z, center_context], dim=-1)
+        else:
+            decoder_input = z
+        recon = {name: decoder(decoder_input) for name, decoder in self.decoders.items()}
         losses = [F.mse_loss(recon[name], targets[name].detach()) for name in recon.keys() if name in targets]
         loss = torch.stack(losses).mean() if losses else z.new_tensor(0.0)
         return {"recon": recon, "loss": loss}
@@ -394,7 +536,66 @@ class TrajectoryCoEReadout(nn.Module):
             }
         )
 
-    def forward(self, trajectory: Dict[str, torch.Tensor], evidence: Dict[str, torch.Tensor]) -> Dict[str, object]:
+    @staticmethod
+    def _normalize_clinical_info(clinical_info: Optional[List[str]], batch_size: int) -> List[str]:
+        if clinical_info is None:
+            return [""] * batch_size
+        if isinstance(clinical_info, str):
+            return [clinical_info] * batch_size
+        if isinstance(clinical_info, tuple):
+            clinical_info = list(clinical_info)
+        if isinstance(clinical_info, list):
+            values = [str(item) for item in clinical_info]
+            if len(values) < batch_size:
+                values.extend([""] * (batch_size - len(values)))
+            return values[:batch_size]
+        return [""] * batch_size
+
+    @classmethod
+    def _weak_targets(
+        cls,
+        labels: torch.Tensor,
+        clinical_info: Optional[List[str]],
+        device: torch.device,
+    ) -> Dict[str, torch.Tensor]:
+        labels = labels.detach().long().view(-1)
+        batch_size = int(labels.shape[0])
+        clinical_text = cls._normalize_clinical_info(clinical_info, batch_size)
+
+        clinical_targets = []
+        for idx, text in enumerate(clinical_text):
+            text_lower = text.lower()
+            high_risk_prior = (
+                "positive" in text_lower
+                or "hpv: 1" in text_lower
+                or "16" in text_lower
+                or "18" in text_lower
+                or "asc-h" in text_lower
+                or "agc" in text_lower
+                or "hsil" in text_lower
+                or "scc" in text_lower
+                or "癌" in text_lower
+                or "阳性" in text_lower
+                or "高危" in text_lower
+            )
+            if text.strip() == "":
+                high_risk_prior = bool(labels[idx].item())
+            clinical_targets.append(1 if high_risk_prior else 0)
+
+        high_grade = labels.eq(1)
+        return {
+            "z1": torch.tensor(clinical_targets, dtype=torch.long, device=device),
+            "z2": torch.where(high_grade, torch.full_like(labels, 3), torch.full_like(labels, 2)),
+            "z3": torch.where(high_grade, torch.full_like(labels, 5), torch.full_like(labels, 4)),
+        }
+
+    def forward(
+        self,
+        trajectory: Dict[str, torch.Tensor],
+        evidence: Dict[str, torch.Tensor],
+        labels: Optional[torch.Tensor] = None,
+        clinical_info: Optional[List[str]] = None,
+    ) -> Dict[str, object]:
         step_inputs = {
             "z1": evidence["clinical_prior"],
             "z2": evidence["colpo"],
@@ -406,7 +607,14 @@ class TrajectoryCoEReadout(nn.Module):
             step_logits = self.step_decoders[step](torch.cat([trajectory[step], ev], dim=-1))
             logits[step] = step_logits
             probs[step] = F.softmax(step_logits, dim=-1)
-        return {"logits": logits, "probs": probs, "template_names": self.template_names}
+
+        result: Dict[str, object] = {"logits": logits, "probs": probs, "template_names": self.template_names}
+        if labels is not None:
+            targets = self._weak_targets(labels, clinical_info, trajectory["z1"].device)
+            losses = [F.cross_entropy(logits[step], targets[step]) for step in ("z1", "z2", "z3")]
+            result["targets"] = targets
+            result["supervision_loss"] = torch.stack(losses).mean()
+        return result
 
 
 class BioCOT_v3_2(nn.Module):
@@ -444,7 +652,7 @@ class BioCOT_v3_2(nn.Module):
         sinkhorn_iters: int = 3,  # Sinkhorn迭代次数
         mhc_epsilon: float = 0.05,  # Sinkhorn epsilon
         use_text_adapter: bool = True,  # 是否使用Text Adapter（5.0的VLM集成）
-        use_variational_reliability: bool = False,
+        use_variational_reliability: bool = True,
         use_center_aware_reliability: bool = True,
         fusion_strategy: str = "gated",
         direct_fusion_only: bool = False,
@@ -452,6 +660,11 @@ class BioCOT_v3_2(nn.Module):
         use_asccp_prior: bool = True,
         use_modality_likelihood: bool = True,
         use_coe_readout: bool = True,
+        use_coe_supervision: bool = True,
+        asccp_prototype_path: Optional[str] = None,
+        use_text_derived_asccp: bool = True,
+        asccp_text_model_name: Optional[str] = None,
+        asccp_text_local_files_only: bool = True,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -471,6 +684,7 @@ class BioCOT_v3_2(nn.Module):
         self.use_asccp_prior = use_asccp_prior
         self.use_modality_likelihood = use_modality_likelihood
         self.use_coe_readout = use_coe_readout
+        self.use_coe_supervision = use_coe_supervision
         self.current_epoch = 0
         
         # ============================================================
@@ -654,11 +868,26 @@ class BioCOT_v3_2(nn.Module):
             else None
         )
         self.posterior_mix_norm = nn.LayerNorm(embed_dim)
-        self.asccp_prior = ASCCPPrototypePrior(dim=embed_dim) if use_asccp_prior and not direct_fusion_only else None
+        self.asccp_prior = (
+            ASCCPPrototypePrior(
+                dim=embed_dim,
+                prototype_path=asccp_prototype_path,
+                text_model_name=asccp_text_model_name or text_model_name,
+                use_text_derived_init=use_text_derived_asccp,
+                local_files_only=asccp_text_local_files_only,
+            )
+            if use_asccp_prior and not direct_fusion_only
+            else None
+        )
         self.asccp_context_norm = nn.LayerNorm(embed_dim)
         self.asccp_context_scale = nn.Parameter(torch.tensor(0.1))
         self.modality_likelihood_decoder = (
-            ModalityLikelihoodDecoder(dim=embed_dim, dropout=dropout_rate * 0.5)
+            ModalityLikelihoodDecoder(
+                dim=embed_dim,
+                num_centers=num_centers,
+                center_aware=True,
+                dropout=dropout_rate * 0.5,
+            )
             if use_modality_likelihood and not direct_fusion_only
             else None
         )
@@ -737,6 +966,7 @@ class BioCOT_v3_2(nn.Module):
         image_names: List[str],  # 图像文件名列表（用于VLM检索）
         clinical_info: Optional[List[str]] = None,  # 临床信息（可选）
         center_labels: Optional[torch.Tensor] = None,  # 中心标签
+        labels: Optional[torch.Tensor] = None,
         clinical_features: Optional[torch.Tensor] = None,  # 🔥 5.0新增：临床特征向量 [B, 7]
         return_loss_components: bool = False,
         current_beta: Optional[float] = None
@@ -941,7 +1171,12 @@ class BioCOT_v3_2(nn.Module):
             output["posterior_evidence"] = posterior["evidence"]
             f_fused = self.posterior_mix_norm(f_fused + posterior["z_final"])
             if self.coe_readout is not None:
-                output["coe_readout"] = self.coe_readout(posterior["trajectory"], posterior["evidence"])
+                output["coe_readout"] = self.coe_readout(
+                    posterior["trajectory"],
+                    posterior["evidence"],
+                    labels=labels if self.use_coe_supervision else None,
+                    clinical_info=clinical_info,
+                )
         
         # --- Step 5: 双头因果解耦 ---
         if self.use_dual:
@@ -994,12 +1229,20 @@ class BioCOT_v3_2(nn.Module):
 
             if self.modality_likelihood_decoder is not None:
                 likelihood_state = posterior["z_final"] if posterior is not None else z_causal
-                modality_likelihood = self.modality_likelihood_decoder(likelihood_state, modality_targets)
+                modality_likelihood = self.modality_likelihood_decoder(
+                    likelihood_state,
+                    modality_targets,
+                    center_labels=center_labels,
+                )
                 output["modality_likelihood"] = modality_likelihood
                 loss_dict["L_modality_likelihood"] = modality_likelihood["loss"]
 
             if self.variational_reliability is not None and "reliability" in output:
                 loss_dict["L_reliability_kl"] = output["reliability"]["kl"]
+
+            coe_readout = output.get("coe_readout")
+            if isinstance(coe_readout, dict) and "supervision_loss" in coe_readout:
+                loss_dict["L_coe"] = coe_readout["supervision_loss"]
             
             # 🔥 5.0优势5：正交损失（解耦方式）
             if self.use_dual and z_noise is not None:
@@ -1128,7 +1371,7 @@ def create_bio_cot_v3_2(config):
         sinkhorn_iters=getattr(config, 'sinkhorn_iters', 3),
         mhc_epsilon=getattr(config, 'mhc_epsilon', 0.05),
         use_text_adapter=getattr(config, 'use_text_adapter', True),
-        use_variational_reliability=getattr(config, 'use_variational_reliability', False),
+        use_variational_reliability=getattr(config, 'use_variational_reliability', True),
         use_center_aware_reliability=getattr(config, 'use_center_aware_reliability', True),
         fusion_strategy=getattr(config, 'fusion_strategy', 'gated'),
         direct_fusion_only=getattr(config, 'direct_fusion_only', False),
@@ -1136,6 +1379,11 @@ def create_bio_cot_v3_2(config):
         use_asccp_prior=getattr(config, 'use_asccp_prior', True),
         use_modality_likelihood=getattr(config, 'use_modality_likelihood', True),
         use_coe_readout=getattr(config, 'use_coe_readout', True),
+        use_coe_supervision=getattr(config, 'use_coe_supervision', True),
+        asccp_prototype_path=getattr(config, 'asccp_prototype_path', None),
+        use_text_derived_asccp=getattr(config, 'use_text_derived_asccp', True),
+        asccp_text_model_name=getattr(config, 'asccp_text_model_name', None),
+        asccp_text_local_files_only=getattr(config, 'asccp_text_local_files_only', True),
     )
     # 设置是否使用VLM Retriever（用于消融实验）
     model.use_vlm_retriever = use_vlm_retriever
