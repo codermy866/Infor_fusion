@@ -1,0 +1,57 @@
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+.DS_Store
+
+# Do not push model/data artifacts.
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.npy
+*.npz
+
+# Do not push paper text, tables, figures, predictions, or patient-level metadata.
+*.md
+*.tex
+*.pdf
+*.doc
+*.docx
+*.csv
+*.xlsx
+*.xls
+_legacy_notes/
+data/vlm_profiles_v1.json
+paper_revision/cache/
+paper_revision/results/
+paper_revision/splits/
+paper_revision/data_expansion/
+paper_revision/final_outputs/
+paper_revision/*sections/
+paper_revision/tables/
+paper_revision/figures/
+paper_revision/scripts/analyze_revision_results.py
+paper_revision/scripts/build_clinical_utility_tables.py
+paper_revision/scripts/build_dataset_tables.py
+paper_revision/scripts/build_*package.py
+paper_revision/scripts/import_frozen_exp_bio32.py
+
+# Fresh experiment outputs.
+logs/*
+results/*
+checkpoints/*
+visualization/*
+
+# Nested experiment outputs.
+ablation_studies/**/logs/*
+ablation_studies/**/results/*
+ablation_studies/**/checkpoints/*
+comparison_experiments/logs/*
+comparison_experiments/results/*
+
+!ablation_studies/**/logs/.gitkeep
+!ablation_studies/**/results/.gitkeep
+!ablation_studies/**/checkpoints/.gitkeep
+!comparison_experiments/logs/.gitkeep
+!comparison_experiments/results/.gitkeep

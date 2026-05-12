@@ -1,0 +1,182 @@
+{
+  "positioning": "HyDRA is a variational posterior-refinement framework for cross-center multimodal diagnosis under modality-specific reliability uncertainty and clinical prior constraints.",
+  "seeds": [
+    42,
+    123,
+    456,
+    789,
+    2024
+  ],
+  "splits": [
+    "internal_validation",
+    "official_external_test",
+    "supplementary_leave_one_center_out"
+  ],
+  "threshold_policy": {
+    "primary": "Select a single operating threshold on the internal validation set and lock it for external testing.",
+    "default_rule": "youden",
+    "screening_sensitivity_rule": "Report an additional fixed-sensitivity operating point if clinically required."
+  },
+  "metrics": [
+    "auc",
+    "auprc",
+    "sensitivity",
+    "specificity",
+    "ppv",
+    "npv",
+    "f1",
+    "ece",
+    "brier"
+  ],
+  "experiment_groups": [
+    {
+      "group_id": "main_diagnostic_performance",
+      "priority": "highest",
+      "purpose": "Compare HyDRA with strong pretrained and direct multimodal fusion baselines under the same evaluation protocol.",
+      "methods": [
+        "HyDRA_Full",
+        "MedCLIP",
+        "ConVIRT",
+        "mmFormer",
+        "Swin-T_Fusion",
+        "Concat_Fusion",
+        "Late_Fusion",
+        "Gated_Fusion",
+        "CrossAttention_Fusion",
+        "SameBackbone_DirectFusion"
+      ],
+      "required_outputs": [
+        "main_performance_table",
+        "roc_pr_curves",
+        "parameter_table"
+      ]
+    },
+    {
+      "group_id": "requirement_level_ablation",
+      "priority": "highest",
+      "purpose": "Replace module-level ablations with ablations tied to the new posterior-refinement narrative.",
+      "families": [
+        {
+          "family": "reliability_inference",
+          "variants": [
+            "DeterministicGate_instead_of_VariationalReliability",
+            "EqualWeight_instead_of_PrecisionWeightedFusion",
+            "No_CenterAwareReliability"
+          ]
+        },
+        {
+          "family": "posterior_refinement",
+          "variants": [
+            "OneShotFusion_without_IterativeRefinement",
+            "No_MemoryRetrieval",
+            "FixedRetrievalTemperature",
+            "No_CenterAwareEmpiricalRetrieval"
+          ]
+        },
+        {
+          "family": "prior_matching_and_coe",
+          "variants": [
+            "No_ClinicalPriorMatching",
+            "OT_Only",
+            "Contrastive_Only",
+            "No_CoE_Supervision",
+            "No_TrajectoryConditionedDecoder"
+          ]
+        }
+      ],
+      "required_outputs": [
+        "ablation_table",
+        "requirement_level_analysis_text"
+      ]
+    },
+    {
+      "group_id": "missing_modality_robustness",
+      "priority": "highest",
+      "settings": [
+        "Full_Modality",
+        "Remove_Colposcopy",
+        "Remove_OCT",
+        "Remove_ClinicalPrior",
+        "Random_OneModality_Missing",
+        "Random_TwoModalities_Missing"
+      ],
+      "required_outputs": [
+        "missing_modality_table",
+        "missingness_degradation_plot"
+      ]
+    },
+    {
+      "group_id": "input_corruption_robustness",
+      "priority": "high",
+      "colposcopy_corruptions": [
+        "blur",
+        "brightness_shift",
+        "occlusion"
+      ],
+      "oct_corruptions": [
+        "speckle_noise",
+        "stripe_artifact",
+        "intensity_perturbation"
+      ],
+      "levels": [
+        "mild",
+        "moderate",
+        "severe"
+      ],
+      "required_outputs": [
+        "corruption_summary_table",
+        "corruption_degradation_plot"
+      ]
+    },
+    {
+      "group_id": "label_noise_stress",
+      "priority": "medium_high",
+      "noise_rates": [
+        0.05,
+        0.1,
+        0.2
+      ],
+      "required_outputs": [
+        "label_noise_table"
+      ]
+    },
+    {
+      "group_id": "cross_center_calibration",
+      "priority": "highest",
+      "required_outputs": [
+        "centerwise_dataset_table",
+        "centerwise_ece_brier_table",
+        "centerwise_reliability_diagram"
+      ]
+    },
+    {
+      "group_id": "clinical_decision_quality",
+      "priority": "medium_high",
+      "required_outputs": [
+        "decision_curve_plot",
+        "net_benefit_table"
+      ]
+    },
+    {
+      "group_id": "coe_faithfulness",
+      "priority": "highest",
+      "substudies": [
+        "expert_evaluation",
+        "evidence_removal",
+        "evidence_swap_counterfactual",
+        "failure_case_analysis"
+      ],
+      "required_outputs": [
+        "expert_rating_table",
+        "evidence_removal_table",
+        "counterfactual_table",
+        "failure_case_figure"
+      ]
+    }
+  ],
+  "external_validation_policy": {
+    "official_external_test": "Fixed 148-subject Jingzhou+Shiyan held-out test set; not used for model selection or hyperparameter tuning.",
+    "supplementary_lco": "Additional leave-one-center-out folds for cross-center robustness; not a replacement for the official external test.",
+    "lco_auc_caveat": "Do not compute ROC-AUC for held-out folds with a single class."
+  }
+}
