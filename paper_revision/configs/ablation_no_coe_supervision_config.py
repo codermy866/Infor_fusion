@@ -9,11 +9,11 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from paper_revision.configs.all_center_patient_holdout_config import AllCenterPatientHoldoutHyDRAConfig
+from paper_revision.configs.all_center_elbo_structured_prior_config import AllCenterELBOStructuredPriorConfig
 
 
 @dataclass
-class AblationNoCoESupervisionConfig(AllCenterPatientHoldoutHyDRAConfig):
+class AblationNoCoESupervisionConfig(AllCenterELBOStructuredPriorConfig):
     experiment_name: str = "Ablation_NoCoESupervision"
     experiment_description: str = "HyDRA variational model without weak trajectory CoE supervision."
 
