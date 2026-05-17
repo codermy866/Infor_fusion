@@ -661,6 +661,7 @@ class BioCOT_v3_2(nn.Module):
         use_modality_likelihood: bool = True,
         use_coe_readout: bool = True,
         use_coe_supervision: bool = True,
+        detach_coe_readout_inputs: bool = False,
         asccp_prototype_path: Optional[str] = None,
         use_text_derived_asccp: bool = True,
         asccp_text_model_name: Optional[str] = None,
@@ -685,6 +686,7 @@ class BioCOT_v3_2(nn.Module):
         self.use_modality_likelihood = use_modality_likelihood
         self.use_coe_readout = use_coe_readout
         self.use_coe_supervision = use_coe_supervision
+        self.detach_coe_readout_inputs = detach_coe_readout_inputs
         self.current_epoch = 0
         
         # ============================================================
@@ -1190,9 +1192,14 @@ class BioCOT_v3_2(nn.Module):
             output["posterior_evidence"] = posterior["evidence"]
             f_fused = self.posterior_mix_norm(f_fused + posterior["z_final"])
             if self.coe_readout is not None:
+                coe_trajectory = posterior["trajectory"]
+                coe_evidence = posterior["evidence"]
+                if self.detach_coe_readout_inputs:
+                    coe_trajectory = {key: value.detach() for key, value in coe_trajectory.items()}
+                    coe_evidence = {key: value.detach() for key, value in coe_evidence.items()}
                 output["coe_readout"] = self.coe_readout(
-                    posterior["trajectory"],
-                    posterior["evidence"],
+                    coe_trajectory,
+                    coe_evidence,
                     labels=labels if self.use_coe_supervision else None,
                     clinical_info=clinical_info,
                 )
@@ -1399,6 +1406,7 @@ def create_bio_cot_v3_2(config):
         use_modality_likelihood=getattr(config, 'use_modality_likelihood', True),
         use_coe_readout=getattr(config, 'use_coe_readout', True),
         use_coe_supervision=getattr(config, 'use_coe_supervision', True),
+        detach_coe_readout_inputs=getattr(config, 'detach_coe_readout_inputs', False),
         asccp_prototype_path=getattr(config, 'asccp_prototype_path', None),
         use_text_derived_asccp=getattr(config, 'use_text_derived_asccp', True),
         asccp_text_model_name=getattr(config, 'asccp_text_model_name', None),
