@@ -30,7 +30,9 @@ class VLMAugmentedRetriever(nn.Module):
         vlm_json_path: str,
         visual_dim: int = 768,
         text_model_name: str = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
-        adapter_hidden_dim: Optional[int] = None
+        adapter_hidden_dim: Optional[int] = None,
+        train_text_encoder: bool = False,
+        text_encoder_trainable_layers: int = 0,
     ):
         """
         Args:
@@ -112,14 +114,17 @@ class VLMAugmentedRetriever(nn.Module):
                     print(f"✅ Text Encoder加载成功 (使用标准格式)")
                 except Exception as e2:
                     raise Exception(f"所有加载方法均失败: safetensors={e1}, standard={e2}")
+
+            for module in self.text_encoder.modules():
+                setattr(module, "_skip_biocot_init", True)
             
-            # 彻底冻结参数
-            for param in self.text_encoder.parameters():
-                param.requires_grad = False
-            self.text_encoder.eval()
+            self.train_text_encoder = bool(train_text_encoder)
+            self.text_encoder_trainable_layers = int(text_encoder_trainable_layers)
+            self._configure_text_encoder_trainability()
             
             text_dim = self.text_encoder.config.hidden_size  # 通常是 768
-            print(f"✅ Text Encoder冻结完成 (维度: {text_dim})")
+            status = "可训练" if self.train_text_encoder else "冻结"
+            print(f"✅ Text Encoder配置完成: {status} (维度: {text_dim})")
             
         except ImportError:
             raise ImportError(
@@ -132,6 +137,8 @@ class VLMAugmentedRetriever(nn.Module):
             text_dim = 768
             self.tokenizer = None
             self.text_encoder = None
+            self.train_text_encoder = False
+            self.text_encoder_trainable_layers = 0
         
         # 3. 🔥 火区：可训练的 Adapter
         # 负责将通用文本语义映射到特定的视觉对齐空间
@@ -150,6 +157,43 @@ class VLMAugmentedRetriever(nn.Module):
         self._init_weights()
         
         print(f"✅ Adapter创建成功 (文本维度: {text_dim} -> 视觉维度: {visual_dim})")
+
+    def _configure_text_encoder_trainability(self):
+        """Freeze all text parameters or expose only the requested BERT layers."""
+        if self.text_encoder is None:
+            return
+
+        for param in self.text_encoder.parameters():
+            param.requires_grad = False
+
+        if not self.train_text_encoder:
+            self.text_encoder.eval()
+            print("✅ Text Encoder冻结完成")
+            return
+
+        layers = self.text_encoder_trainable_layers
+        if layers < 0:
+            for param in self.text_encoder.parameters():
+                param.requires_grad = True
+            scope = "all"
+        else:
+            encoder_layers = getattr(getattr(self.text_encoder, "encoder", None), "layer", None)
+            if encoder_layers is not None and layers > 0:
+                for layer in encoder_layers[-layers:]:
+                    for param in layer.parameters():
+                        param.requires_grad = True
+                scope = f"last_{layers}_layers"
+            else:
+                scope = "adapter_only"
+            pooler = getattr(self.text_encoder, "pooler", None)
+            if pooler is not None and layers != 0:
+                for param in pooler.parameters():
+                    param.requires_grad = True
+
+        self.text_encoder.train()
+        trainable = sum(p.numel() for p in self.text_encoder.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.text_encoder.parameters())
+        print(f"✅ Text Encoder可训练范围: {scope} ({trainable:,}/{total:,} params)")
     
     def _init_weights(self):
         """初始化Adapter权重"""
@@ -207,21 +251,23 @@ class VLMAugmentedRetriever(nn.Module):
         
         # 2. ❄️ 通过冻结的 Encoder
         if self.text_encoder is not None:
-            with torch.no_grad():
-                # Tokenize
-                inputs = self.tokenizer(
-                    batch_texts, 
-                    padding=True, 
-                    truncation=True, 
-                    max_length=128, 
-                    return_tensors="pt"
-                ).to(device)
-                
-                # 编码
+            if not self.train_text_encoder:
+                self.text_encoder.eval()
+            inputs = self.tokenizer(
+                batch_texts,
+                padding=True,
+                truncation=True,
+                max_length=128,
+                return_tensors="pt"
+            ).to(device)
+
+            if self.train_text_encoder:
                 outputs = self.text_encoder(**inputs)
-                
-                # 取 CLS token 作为句向量
-                frozen_embeds = outputs.last_hidden_state[:, 0, :]  # [B, text_dim]
+                frozen_embeds = outputs.last_hidden_state[:, 0, :]
+            else:
+                with torch.no_grad():
+                    outputs = self.text_encoder(**inputs)
+                    frozen_embeds = outputs.last_hidden_state[:, 0, :]  # [B, text_dim]
         else:
             # Fallback: 使用简单的嵌入（仅用于测试）
             warnings.warn("使用简化的文本编码器（仅用于测试）")

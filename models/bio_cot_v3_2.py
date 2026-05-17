@@ -617,6 +617,24 @@ class TrajectoryCoEReadout(nn.Module):
         return result
 
 
+class ResidualFeatureAdapter(nn.Module):
+    """Small residual adapter for cached ViT patch features."""
+
+    def __init__(self, dim: int = 768, bottleneck_dim: int = 192, dropout: float = 0.1):
+        super().__init__()
+        self.adapter = nn.Sequential(
+            nn.Linear(dim, bottleneck_dim),
+            nn.LayerNorm(bottleneck_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(bottleneck_dim, dim),
+        )
+        self.scale = nn.Parameter(torch.tensor(0.1))
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        return features + torch.clamp(self.scale, min=0.0, max=1.0) * self.adapter(features)
+
+
 class BioCOT_v3_2(nn.Module):
     """
     Bio-COT 3.2 Enhanced Version (整合5.0所有优势)
@@ -662,6 +680,11 @@ class BioCOT_v3_2(nn.Module):
         use_coe_readout: bool = True,
         use_coe_supervision: bool = True,
         detach_coe_readout_inputs: bool = False,
+        use_visual_domain_adapter: bool = False,
+        visual_adapter_bottleneck: int = 192,
+        visual_adapter_dropout: float = 0.1,
+        train_text_encoder: bool = False,
+        text_encoder_trainable_layers: int = 0,
         asccp_prototype_path: Optional[str] = None,
         use_text_derived_asccp: bool = True,
         asccp_text_model_name: Optional[str] = None,
@@ -687,6 +710,7 @@ class BioCOT_v3_2(nn.Module):
         self.use_coe_readout = use_coe_readout
         self.use_coe_supervision = use_coe_supervision
         self.detach_coe_readout_inputs = detach_coe_readout_inputs
+        self.use_visual_domain_adapter = use_visual_domain_adapter
         self.current_epoch = 0
         
         # ============================================================
@@ -717,7 +741,9 @@ class BioCOT_v3_2(nn.Module):
             self.knowledge_retriever = VLMAugmentedRetriever(
                 vlm_json_path=vlm_json_path,
                 visual_dim=embed_dim,
-                text_model_name=text_model_name
+                text_model_name=text_model_name,
+                train_text_encoder=train_text_encoder,
+                text_encoder_trainable_layers=text_encoder_trainable_layers,
             )
         else:
             self.knowledge_retriever = None
@@ -746,6 +772,25 @@ class BioCOT_v3_2(nn.Module):
             )
         else:
             self.text_adapter = None
+
+        self.visual_domain_adapters = (
+            nn.ModuleDict(
+                {
+                    "oct": ResidualFeatureAdapter(
+                        dim=embed_dim,
+                        bottleneck_dim=visual_adapter_bottleneck,
+                        dropout=visual_adapter_dropout,
+                    ),
+                    "colpo": ResidualFeatureAdapter(
+                        dim=embed_dim,
+                        bottleneck_dim=visual_adapter_bottleneck,
+                        dropout=visual_adapter_dropout,
+                    ),
+                }
+            )
+            if use_visual_domain_adapter
+            else None
+        )
         
         # ============================================================
         # 🔥 5.0优势2：噪声感知流形超连接（NA-mHC）
@@ -947,6 +992,8 @@ class BioCOT_v3_2(nn.Module):
 
     def _init_weights(self, m):
         """统一初始化：Xavier for Linear, Standard for LayerNorm"""
+        if getattr(m, "_skip_biocot_init", False):
+            return
         if isinstance(m, nn.Linear):
             nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
@@ -1057,6 +1104,10 @@ class BioCOT_v3_2(nn.Module):
             f_oct_processed = f_oct
             f_colpo_processed = f_colpo
             all_noise_probs = []
+
+        if self.visual_domain_adapters is not None:
+            f_oct_processed = self.visual_domain_adapters["oct"](f_oct_processed)
+            f_colpo_processed = self.visual_domain_adapters["colpo"](f_colpo_processed)
         
         # --- Step 1: 语义锚点生成（使用VLMAugmentedRetriever或静态嵌入）---
         # 仿照exp_bio3.0_improved的方案：使用note_projector处理嵌入
@@ -1407,6 +1458,11 @@ def create_bio_cot_v3_2(config):
         use_coe_readout=getattr(config, 'use_coe_readout', True),
         use_coe_supervision=getattr(config, 'use_coe_supervision', True),
         detach_coe_readout_inputs=getattr(config, 'detach_coe_readout_inputs', False),
+        use_visual_domain_adapter=getattr(config, 'use_visual_domain_adapter', False),
+        visual_adapter_bottleneck=getattr(config, 'visual_adapter_bottleneck', 192),
+        visual_adapter_dropout=getattr(config, 'visual_adapter_dropout', 0.1),
+        train_text_encoder=getattr(config, 'train_text_encoder', False),
+        text_encoder_trainable_layers=getattr(config, 'text_encoder_trainable_layers', 0),
         asccp_prototype_path=getattr(config, 'asccp_prototype_path', None),
         use_text_derived_asccp=getattr(config, 'use_text_derived_asccp', True),
         asccp_text_model_name=getattr(config, 'asccp_text_model_name', None),
@@ -1414,4 +1470,23 @@ def create_bio_cot_v3_2(config):
     )
     # 设置是否使用VLM Retriever（用于消融实验）
     model.use_vlm_retriever = use_vlm_retriever
+    if getattr(config, 'freeze_visual_encoder', False) and getattr(model, 'visual_encoder', None) is not None:
+        for param in model.visual_encoder.parameters():
+            param.requires_grad = False
+    domain_pretrain_path = getattr(config, 'load_domain_pretrain_path', None)
+    if domain_pretrain_path:
+        ckpt_path = Path(domain_pretrain_path)
+        if ckpt_path.exists():
+            payload = torch.load(ckpt_path, map_location='cpu')
+            if getattr(model, 'visual_domain_adapters', None) is not None and 'visual_domain_adapters' in payload:
+                missing, unexpected = model.visual_domain_adapters.load_state_dict(payload['visual_domain_adapters'], strict=False)
+                print(f"✅ Loaded Stage-1 visual adapters from {ckpt_path} (missing={len(missing)}, unexpected={len(unexpected)})")
+            if 'clinical_feature_projector' in payload:
+                missing, unexpected = model.clinical_feature_projector.load_state_dict(
+                    payload['clinical_feature_projector'],
+                    strict=False,
+                )
+                print(f"✅ Loaded Stage-1 clinical projector from {ckpt_path} (missing={len(missing)}, unexpected={len(unexpected)})")
+        else:
+            print(f"⚠️ Stage-1 checkpoint not found: {ckpt_path}")
     return model
