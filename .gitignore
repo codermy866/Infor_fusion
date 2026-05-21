@@ -21,6 +21,7 @@ __pycache__/
 *.csv
 *.xlsx
 *.xls
+!paper_revision/EXPERIMENT_SCOPE.md
 _legacy_notes/
 data/vlm_profiles_v1.json
 paper_revision/cache/

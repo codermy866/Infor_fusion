@@ -36,6 +36,13 @@ from typing import Dict, List, Tuple
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
+
+from paper_revision.scripts.clinical_variable_mapping import (
+    clinical_features_from_row,
+    normalize_age,
+    normalize_hpv,
+    normalize_tct,
+)
 # 添加exp_bio3.2本地的src目录到sys.path
 local_exp_src = Path(__file__).resolve().parent.parent.parent / 'src'
 if local_exp_src.exists():
@@ -288,38 +295,15 @@ class FiveCentersMultimodalDataset(Dataset):
         # 加载Colposcopy图像
         colposcopy_images = self._load_colposcopy_images(row['col_paths'])
         
-        # 解析临床数据
-        age = float(row['age']) if pd.notna(row['age']) else 50.0
-        hpv_val = row['hpv']
-        if pd.isna(hpv_val):
-            hpv = 0.0
-        elif isinstance(hpv_val, (int, float)):
-            hpv = 1.0 if float(hpv_val) > 0 else 0.0
-        else:
-            hpv_str = str(hpv_val).lower()
-            hpv = 1.0 if any(k in hpv_str for k in ['16', '18', 'positive', '阳性', '高危', '1']) else 0.0
-        
-        tct_str = str(row['tct']).upper() if pd.notna(row['tct']) else ''
-        tct_onehot = [0.0, 0.0, 0.0, 0.0, 0.0]
-        if 'ASC-US' in tct_str:
-            tct_onehot[0] = 1.0
-        elif 'ASC-H' in tct_str:
-            tct_onehot[1] = 1.0
-        elif 'LSIL' in tct_str:
-            tct_onehot[2] = 1.0
-        elif 'HSIL' in tct_str:
-            tct_onehot[3] = 1.0
-        elif 'SCC' in tct_str or '癌' in tct_str:
-            tct_onehot[4] = 1.0
-        
-        clinical_features = torch.tensor([
-            age / 100.0,  # 归一化年龄
-            hpv,
-            *tct_onehot
-        ], dtype=torch.float32)
+        # 解析临床数据。当前实验只使用 HPV/TCT/Age，不使用检查报告；
+        # HPV 规则不再把字符串中含 "1" 误判为阳性。
+        clinical_features = torch.tensor(clinical_features_from_row(row), dtype=torch.float32)
+        age = normalize_age(row.get("age"))
+        hpv = normalize_hpv(row.get("hpv"))
+        tct_str = normalize_tct(row.get("tct"))
         
         clinical_data = {
-            'hpv': int(hpv),
+            'hpv': hpv,
             'tct': tct_str,
             'age': age
         }

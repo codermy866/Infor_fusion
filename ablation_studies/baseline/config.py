@@ -15,13 +15,13 @@ from config import BioCOT_v3_2_Config
 @dataclass
 class BaselineConfig(BioCOT_v3_2_Config):
     """
-    Baseline 配置：保留4.0和5.0的核心优势，移除其他高级模块
+    Baseline 配置：当前主实验不使用VLM evidence cache。
+    下面保留的历史VLM术语仅为legacy背景，不代表当前实验输入。
     
-    4.0的核心优势（保留）：
-    - ✅ 动态知识更新（VLMAugmentedRetriever）
-    - ✅ VLM资源利用（VLM缓存）
-    - ✅ 参数效率（Frozen Text Encoder + Trainable Adapter）
-    - ✅ 丰富语义信息（VLM描述）
+    当前保留：
+    - ✅ OCT/阴道镜图像特征
+    - ✅ HPV/TCT/Age非报告临床变量
+    - ✅ 内部语义锚点适配（无VLM evidence cache）
     
     5.0的核心优势（保留）：
     - ✅ 分层多尺度特征提取（HierarchicalViT）
@@ -40,7 +40,7 @@ class BaselineConfig(BioCOT_v3_2_Config):
     """
     
     experiment_name: str = "baseline"
-    experiment_description: str = "Baseline: 保留4.0和5.0的核心优势，移除其他高级模块"
+    experiment_description: str = "Baseline: no-report inputs with VLM evidence cache disabled"
     
     num_epochs: int = 20
     
@@ -76,4 +76,3 @@ class BaselineConfig(BioCOT_v3_2_Config):
         self.num_epochs = 20
         for dir_name in [self.output_dir, self.checkpoint_dir, self.log_dir]:
             Path(dir_name).mkdir(parents=True, exist_ok=True)
-

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
@@ -24,9 +25,10 @@ EXP_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(EXP_ROOT))
 
 from config import BioCOT_v3_2_Config
-from data.cached_patch_dataset import CachedPatchFeatureDataset
+from data.cached_patch_dataset import CachedPatchFeatureDataset, case_key
 from data.dataset_v3_2 import FiveCentersMultimodalDatasetV3_2
 from models.bio_cot_v3_2 import create_bio_cot_v3_2
+from paper_revision.scripts.clinical_variable_mapping import assert_no_report_columns, clinical_features_from_row
 from training.extract_vit_patches import extract_patch_features_with_vit
 
 
@@ -36,9 +38,10 @@ CENTER_NAMES = {
     "M20203": "Wuda",
     "M22102": "Xiangyang",
     "M0008": "Jingzhou",
-    "M22101": "Jingzhou",
+    "M22101": "Shiyan",
     "M22104": "Shiyan",
 }
+_MISSING_INTERPRETABILITY_WARNED: set[str] = set()
 
 
 def center_from_oct(oct_id: str) -> str:
@@ -79,32 +82,86 @@ def split_csv(config: BioCOT_v3_2_Config, split: str) -> Path:
     return mapping[split]
 
 
-def clinical_features_from_batch(batch: Dict[str, object], batch_size: int, device: torch.device) -> Optional[torch.Tensor]:
+def validate_evaluation_scope(config: BioCOT_v3_2_Config) -> None:
+    """Check locked no-report all-center split before evaluation."""
+    root = Path(config.data_root)
+    split_paths = [
+        root / "train_labels.csv",
+        root / "val_labels.csv",
+        root / "external_test_labels.csv",
+    ]
+    if not all(path.exists() for path in split_paths):
+        return
+    dfs = []
+    for path in split_paths:
+        df = pd.read_csv(path, encoding="utf-8-sig")
+        assert_no_report_columns(df.columns)
+        if {"col_count", "oct_count"}.issubset(df.columns):
+            missing = df[(df["col_count"].astype(float) <= 0) | (df["oct_count"].astype(float) <= 0)]
+            if len(missing):
+                raise ValueError(f"{path} contains {len(missing)} rows without both colposcopy and OCT images.")
+        dfs.append(df)
+    expected_n = getattr(config, "expected_aligned_n", None)
+    if expected_n is not None and "all_center_patient_holdout_70_10_20" in str(root):
+        observed = sum(len(df) for df in dfs)
+        if observed != int(expected_n):
+            raise ValueError(f"All-center split N mismatch: train+val+external={observed}, expected {expected_n}.")
+    if getattr(config, "clinical_feature_dim", 14) != 14:
+        raise ValueError("Current no-report HPV/TCT/Age mapping expects clinical_feature_dim=14.")
+    if getattr(config, "use_cached_patch_features", False):
+        cache_path = Path(getattr(config, "feature_cache_path"))
+        if cache_path.exists():
+            payload = torch.load(cache_path, map_location="cpu")
+            features = payload.get("features", payload) if isinstance(payload, dict) else payload
+            needed = [case_key(row) for df in dfs for _, row in df.iterrows()]
+            missing_keys = [key for key in needed if key not in features]
+            if missing_keys:
+                preview = ", ".join(missing_keys[:3])
+                raise KeyError(f"{len(missing_keys)} split cases missing from feature cache. Examples: {preview}")
+
+
+def _check_clinical_feature_dim(features: torch.Tensor, expected_dim: int | None) -> torch.Tensor:
+    if expected_dim is not None and features.shape[-1] != int(expected_dim):
+        raise ValueError(f"clinical_features dim mismatch: got {features.shape[-1]}, expected {expected_dim}")
+    return features
+
+
+def _batch_value(values, index: int, default):
+    if isinstance(values, torch.Tensor):
+        return values[index].item()
+    if isinstance(values, (list, tuple)):
+        return values[index]
+    return default if values is None else values
+
+
+def clinical_features_from_batch(
+    batch: Dict[str, object],
+    batch_size: int,
+    device: torch.device,
+    expected_dim: int | None = None,
+) -> Optional[torch.Tensor]:
+    """Build evaluation clinical features from HPV, age, and TCT only."""
     if "clinical_features" in batch and batch["clinical_features"] is not None:
-        return batch["clinical_features"].to(device, non_blocking=True)
+        features = batch["clinical_features"].to(device, non_blocking=True).float()
+        return _check_clinical_feature_dim(features, expected_dim)
     if "clinical_data" not in batch:
         return None
     clinical_data = batch["clinical_data"]
     if not isinstance(clinical_data, dict):
         return None
-    hpv = clinical_data.get("hpv", torch.zeros(batch_size, device=device))
-    age = clinical_data.get("age", torch.zeros(batch_size, device=device))
-    tct = clinical_data.get("tct", torch.zeros(batch_size, device=device))
-    if not isinstance(hpv, torch.Tensor):
-        hpv = torch.as_tensor(hpv, device=device)
-    else:
-        hpv = hpv.to(device)
-    if not isinstance(age, torch.Tensor):
-        age = torch.as_tensor(age, device=device)
-    else:
-        age = age.to(device)
-    if not isinstance(tct, torch.Tensor):
-        tct = torch.zeros(batch_size, device=device)
-    else:
-        tct = tct.to(device)
-    tct = torch.clamp(tct.long(), min=0, max=4)
-    tct_onehot = torch.nn.functional.one_hot(tct, num_classes=5).float()
-    return torch.cat([hpv.float().unsqueeze(1), age.float().unsqueeze(1), tct_onehot], dim=1)
+    hpv_values = clinical_data.get("hpv")
+    age_values = clinical_data.get("age")
+    tct_values = clinical_data.get("tct")
+    rows = [
+        {
+            "hpv": _batch_value(hpv_values, i, None),
+            "age": _batch_value(age_values, i, None),
+            "tct": _batch_value(tct_values, i, None),
+        }
+        for i in range(batch_size)
+    ]
+    features = torch.tensor([clinical_features_from_row(row) for row in rows], dtype=torch.float32, device=device)
+    return _check_clinical_feature_dim(features, expected_dim)
 
 
 def patch_features(
@@ -129,6 +186,98 @@ def normalize_string_list(values: object) -> List[str]:
     return [str(values)]
 
 
+def _warn_missing_once(field: str) -> None:
+    if field not in _MISSING_INTERPRETABILITY_WARNED:
+        print(f"WARNING: interpretability field missing: {field}; exporting empty string.")
+        _MISSING_INTERPRETABILITY_WARNED.add(field)
+
+
+def _scalar_from_tensor(value, sample_index: int, reducer: str = "item"):
+    if value is None:
+        return ""
+    try:
+        tensor = value.detach().cpu()
+        if tensor.dim() == 0:
+            return float(tensor.item())
+        sample = tensor[sample_index]
+        if reducer == "norm":
+            return float(sample.float().norm().item())
+        if reducer == "argmax":
+            return int(sample.argmax().item())
+        if reducer == "max":
+            return float(sample.max().item())
+        if sample.numel() == 1:
+            return float(sample.view(-1)[0].item())
+        return float(sample.float().mean().item())
+    except Exception:
+        return ""
+
+
+def extract_interpretability_fields(outputs: Dict[str, object], sample_index: int) -> Dict[str, object]:
+    """Extract scalar interpretability fields without exporting embeddings."""
+    fields: Dict[str, object] = {
+        "reliability_oct": "",
+        "reliability_colposcopy": "",
+        "reliability_clinical_text": "",
+        "precision_oct": "",
+        "precision_colposcopy": "",
+        "precision_clinical_text": "",
+        "guideline_assignment": "",
+        "guideline_assignment_prob": "",
+        "guideline_entropy": "",
+        "coe_z0_norm": "",
+        "coe_z1_norm": "",
+        "coe_z2_norm": "",
+        "coe_z3_norm": "",
+        "coe_delta_clinical": "",
+        "coe_delta_colposcopy": "",
+        "coe_delta_oct": "",
+        "z_causal_norm": "",
+        "z_noise_norm": "",
+    }
+    reliability = outputs.get("reliability", {})
+    weights = outputs.get("fusion_weights", {})
+    precision = reliability.get("precision", {}) if isinstance(reliability, dict) else {}
+    weights = reliability.get("weights", weights) if isinstance(reliability, dict) else weights
+    if isinstance(weights, dict):
+        fields["reliability_oct"] = _scalar_from_tensor(weights.get("oct"), sample_index)
+        fields["reliability_colposcopy"] = _scalar_from_tensor(weights.get("colpo"), sample_index)
+        fields["reliability_clinical_text"] = _scalar_from_tensor(weights.get("clinical_prior"), sample_index)
+    if isinstance(precision, dict):
+        fields["precision_oct"] = _scalar_from_tensor(precision.get("oct"), sample_index)
+        fields["precision_colposcopy"] = _scalar_from_tensor(precision.get("colpo"), sample_index)
+        fields["precision_clinical_text"] = _scalar_from_tensor(precision.get("clinical_prior"), sample_index)
+
+    asccp = outputs.get("asccp_prior", {})
+    if isinstance(asccp, dict):
+        assignment = asccp.get("assignment")
+        fields["guideline_assignment"] = _scalar_from_tensor(assignment, sample_index, reducer="argmax")
+        fields["guideline_assignment_prob"] = _scalar_from_tensor(assignment, sample_index, reducer="max")
+        fields["guideline_entropy"] = _scalar_from_tensor(asccp.get("entropy"), sample_index)
+
+    trajectory = outputs.get("posterior_trajectory", {})
+    if isinstance(trajectory, dict):
+        for key in ["z0", "z1", "z2", "z3"]:
+            fields[f"coe_{key}_norm"] = _scalar_from_tensor(trajectory.get(key), sample_index, reducer="norm")
+        try:
+            z0 = trajectory.get("z0").detach().cpu()[sample_index]
+            z1 = trajectory.get("z1").detach().cpu()[sample_index]
+            z2 = trajectory.get("z2").detach().cpu()[sample_index]
+            z3 = trajectory.get("z3").detach().cpu()[sample_index]
+            fields["coe_delta_clinical"] = float((z1 - z0).float().norm().item())
+            fields["coe_delta_colposcopy"] = float((z2 - z1).float().norm().item())
+            fields["coe_delta_oct"] = float((z3 - z2).float().norm().item())
+        except Exception:
+            pass
+
+    fields["z_causal_norm"] = _scalar_from_tensor(outputs.get("z_causal"), sample_index, reducer="norm")
+    fields["z_noise_norm"] = _scalar_from_tensor(outputs.get("z_noise"), sample_index, reducer="norm")
+    for field, value in fields.items():
+        if value == "":
+            _warn_missing_once(field)
+    return fields
+
+
 def choose_missing_modalities(setting: str, batch_size: int, seed: int) -> List[Sequence[str]]:
     rng = np.random.default_rng(seed)
     modalities = ["oct", "colposcopy", "clinical"]
@@ -138,7 +287,7 @@ def choose_missing_modalities(setting: str, batch_size: int, seed: int) -> List[
         return [["oct"] for _ in range(batch_size)]
     if setting == "remove_colposcopy":
         return [["colposcopy"] for _ in range(batch_size)]
-    if setting == "remove_clinical_prior":
+    if setting in {"remove_clinical_prior", "remove_clinical_text"}:
         return [["clinical"] for _ in range(batch_size)]
     if setting == "random_one":
         return [[str(rng.choice(modalities))] for _ in range(batch_size)]
@@ -259,7 +408,7 @@ def main() -> None:
     parser.add_argument(
         "--missing-modality",
         default="none",
-        choices=["none", "remove_oct", "remove_colposcopy", "remove_clinical_prior", "random_one", "random_two"],
+        choices=["none", "remove_oct", "remove_colposcopy", "remove_clinical_text", "remove_clinical_prior", "random_one", "random_two"],
     )
     parser.add_argument(
         "--input-corruption",
@@ -282,6 +431,7 @@ def main() -> None:
     config = load_config(args.config)
     if args.data_root is not None:
         config.data_root = args.data_root
+    validate_evaluation_scope(config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     transform = transforms.Compose(
@@ -293,7 +443,17 @@ def main() -> None:
     )
     csv_path = Path(args.csv) if args.csv else split_csv(config, args.split)
     if getattr(config, "use_cached_patch_features", False):
-        dataset = CachedPatchFeatureDataset(csv_path, getattr(config, "feature_cache_path"))
+        dataset = CachedPatchFeatureDataset(
+            csv_path,
+            getattr(config, "feature_cache_path"),
+            expected_clinical_feature_dim=getattr(config, "clinical_feature_dim", None),
+            expected_aligned_n=getattr(config, "expected_aligned_n", None),
+            expected_case_index_csv=EXP_ROOT
+            / "paper_revision"
+            / "splits"
+            / "full_multimodal_resplit"
+            / "final_1897_case_index.csv",
+        )
     else:
         dataset = FiveCentersMultimodalDatasetV3_2(
             csv_path=str(csv_path),
@@ -325,6 +485,7 @@ def main() -> None:
         suffix_parts.append(args.missing_modality)
     if args.input_corruption != "none":
         suffix_parts.append(args.input_corruption)
+        suffix_parts.append(f"sev{str(args.corruption_severity).replace('.', 'p')}")
     suffix = "_".join(suffix_parts) if suffix_parts else "full"
     out_path = output_dir / f"{args.method}_run{args.run_id}_seed{args.seed}_{args.split}_{suffix}.csv"
 
@@ -335,6 +496,8 @@ def main() -> None:
             labels = batch["label"].to(device, non_blocking=True)
             centers = batch["center_idx"].to(device, non_blocking=True)
             image_names = normalize_string_list(batch["image_names"])
+            # Current experiments do not use examination reports; clinical_info
+            # is restricted to non-report clinical variables from the dataset.
             clinical_info = normalize_string_list(batch.get("clinical_info", ""))
             batch_size = labels.shape[0]
 
@@ -356,7 +519,12 @@ def main() -> None:
                     config.vit_batch_size,
                     pretrained=getattr(config, "vit_pretrained", False),
                 )
-            clinical_features = clinical_features_from_batch(batch, batch_size, device)
+            clinical_features = clinical_features_from_batch(
+                batch,
+                batch_size,
+                device,
+                expected_dim=getattr(config, "clinical_feature_dim", None),
+            )
 
             oct_feats, col_feats = apply_input_corruption(
                 oct_feats,
@@ -397,36 +565,29 @@ def main() -> None:
             )
             probs = torch.softmax(outputs["pred"], dim=1)[:, 1].detach().cpu().numpy()
             labels_np = labels.detach().cpu().numpy()
-            reliability_weights = outputs.get("fusion_weights", {})
-            reliability_np = {}
-            for key in ["oct", "colpo", "clinical_prior"]:
-                value = reliability_weights.get(key) if isinstance(reliability_weights, dict) else None
-                if value is not None:
-                    reliability_np[key] = value.detach().cpu().view(-1).numpy()
             batch_df = dataset.df.iloc[cursor : cursor + batch_size]
             cursor += batch_size
 
             for i, (_, case) in enumerate(batch_df.iterrows()):
                 case_id = case_value(case, "ID", "patient_id", f"case_{cursor - batch_size + i}")
                 oct_id = case_value(case, "OCT", "oct_id", "")
-                rows.append(
-                    {
-                        "method": args.method,
-                        "run_id": args.run_id,
-                        "seed": args.seed,
-                        "split": "external_test" if args.split in {"external", "external_test"} else "internal_validation",
-                        "case_id": case_id,
-                        "center": center_from_oct(oct_id),
-                        "y_true": int(labels_np[i]),
-                        "y_prob": float(probs[i]),
-                        "modality_setting": args.missing_modality,
-                        "input_corruption": args.input_corruption,
-                        "corruption_severity": float(args.corruption_severity) if args.input_corruption != "none" else "",
-                        "reliability_oct": float(reliability_np["oct"][i]) if "oct" in reliability_np else "",
-                        "reliability_colposcopy": float(reliability_np["colpo"][i]) if "colpo" in reliability_np else "",
-                        "reliability_clinical_prior": float(reliability_np["clinical_prior"][i]) if "clinical_prior" in reliability_np else "",
-                    }
-                )
+                interp = extract_interpretability_fields(outputs, i)
+                row = {
+                    "method": args.method,
+                    "run_id": args.run_id,
+                    "seed": args.seed,
+                    "split": "external_test" if args.split in {"external", "external_test"} else "internal_validation",
+                    "case_id": case_id,
+                    "center": center_from_oct(oct_id),
+                    "y_true": int(labels_np[i]),
+                    "y_prob": float(probs[i]),
+                    "modality_setting": args.missing_modality,
+                    "input_corruption": args.input_corruption,
+                    "corruption_severity": float(args.corruption_severity) if args.input_corruption != "none" else "",
+                    **interp,
+                }
+                row["reliability_clinical_prior"] = row["reliability_clinical_text"]
+                rows.append(row)
 
     if not rows:
         raise RuntimeError(f"No predictions were produced for split={args.split}")

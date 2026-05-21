@@ -38,7 +38,7 @@ CENTER_MAP = {
     "M20203": "Wuda",
     "M22102": "Xiangyang",
     "M0008": "Jingzhou",
-    "M22101": "Jingzhou",
+    "M22101": "Shiyan",
     "M22104": "Shiyan",
 }
 
@@ -46,8 +46,8 @@ CENTER_CODES_BY_GROUP = {
     "Enshi": ["M22105"],
     "Wuda": ["M20105", "M20203"],
     "Xiangyang": ["M22102"],
-    "Jingzhou": ["M0008", "M22101"],
-    "Shiyan": ["M22104"],
+    "Jingzhou": ["M0008"],
+    "Shiyan": ["M22104", "M22101"],
 }
 
 CENTER_GROUP_ID = {

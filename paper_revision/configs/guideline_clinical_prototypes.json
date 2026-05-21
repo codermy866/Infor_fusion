@@ -1,0 +1,56 @@
+[
+  {
+    "prototype_id": 0,
+    "name": "HPV-negative NILM low-risk state",
+    "clinical_description": "HPV-negative with NILM cytology and no high-risk screening signal from HPV/TCT/Age variables.",
+    "expected_hpv_status": "hpv_negative",
+    "expected_tct_status": "NILM",
+    "risk_level": "low",
+    "no_pathology_label": true
+  },
+  {
+    "prototype_id": 1,
+    "name": "hrHPV-positive NILM surveillance state",
+    "clinical_description": "High-risk HPV positive with NILM cytology, representing surveillance-oriented clinical semantics.",
+    "expected_hpv_status": "hrhpv_positive",
+    "expected_tct_status": "NILM",
+    "risk_level": "intermediate",
+    "no_pathology_label": true
+  },
+  {
+    "prototype_id": 2,
+    "name": "ASC-US or LSIL low-grade triage state",
+    "clinical_description": "ASC-US or LSIL cytology pattern with HPV/TCT/Age variables indicating low-grade triage semantics.",
+    "expected_hpv_status": "hpv_unknown_or_hrhpv_positive",
+    "expected_tct_status": "ASC-US_or_LSIL",
+    "risk_level": "intermediate",
+    "no_pathology_label": true
+  },
+  {
+    "prototype_id": 3,
+    "name": "HPV16/18-positive or ASC-H/AGC high-risk triage state",
+    "clinical_description": "HPV16/18 positivity or ASC-H/AGC cytology pattern indicating high-risk triage semantics.",
+    "expected_hpv_status": "hpv16_18_positive",
+    "expected_tct_status": "ASC-H_or_AGC",
+    "risk_level": "high",
+    "no_pathology_label": true
+  },
+  {
+    "prototype_id": 4,
+    "name": "HSIL high-grade suspicious state",
+    "clinical_description": "HSIL cytology pattern indicating high-grade suspicious clinical screening semantics.",
+    "expected_hpv_status": "hpv_unknown_or_hrhpv_positive",
+    "expected_tct_status": "HSIL",
+    "risk_level": "very_high",
+    "no_pathology_label": true
+  },
+  {
+    "prototype_id": 5,
+    "name": "Discordant high-risk clinical state",
+    "clinical_description": "Discordant HPV/TCT/Age screening variables where one clinical signal is high-risk while another is unavailable or lower risk.",
+    "expected_hpv_status": "discordant_or_unknown",
+    "expected_tct_status": "discordant_or_unknown",
+    "risk_level": "uncertain_high",
+    "no_pathology_label": true
+  }
+]

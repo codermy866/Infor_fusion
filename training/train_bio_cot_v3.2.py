@@ -72,7 +72,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models.bio_cot_v3_2 import BioCOT_v3_2, create_bio_cot_v3_2
 from data.dataset_v3_2 import FiveCentersMultimodalDatasetV3_2
-from data.cached_patch_dataset import CachedPatchFeatureDataset
+from data.cached_patch_dataset import CachedPatchFeatureDataset, case_key
+from paper_revision.scripts.clinical_variable_mapping import (
+    assert_no_report_columns,
+    clinical_features_from_row,
+)
 from config import BioCOT_v3_2_Config
 # 修复漏洞1：使用新的函数提取Patch特征（丢弃[CLS]）
 try:
@@ -184,7 +188,7 @@ def visualize_training(history: Dict, log_dir: Path, timestamp: str, best_auc: f
     ax6.set_ylim([0, 1])
     
     # 添加总标题
-    fig.suptitle(f'Bio-COT 3.1 Logic Loop Training Results (Best AUC: {best_auc:.4f})', 
+    fig.suptitle(f'HyDRA-CoE Training Results (Best AUC: {best_auc:.4f})', 
                  fontsize=16, fontweight='bold', y=0.995)
     
     # 调整布局
@@ -320,27 +324,48 @@ def apply_modality_dropout(
     return oct_features, colpo_features, clinical_features, clinical_info
 
 
-def clinical_features_from_batch(batch: Dict[str, object], batch_size: int, device: torch.device) -> torch.Tensor | None:
-    """Build the 7-D clinical feature vector used by the clinical evolver."""
+def _check_clinical_feature_dim(features: torch.Tensor, expected_dim: int | None) -> torch.Tensor:
+    if expected_dim is not None and features.shape[-1] != int(expected_dim):
+        raise ValueError(f"clinical_features dim mismatch: got {features.shape[-1]}, expected {expected_dim}")
+    return features
+
+
+def _batch_value(values, index: int, default):
+    if isinstance(values, torch.Tensor):
+        return values[index].item()
+    if isinstance(values, (list, tuple)):
+        return values[index]
+    return default if values is None else values
+
+
+def clinical_features_from_batch(
+    batch: Dict[str, object],
+    batch_size: int,
+    device: torch.device,
+    expected_dim: int | None = None,
+) -> torch.Tensor | None:
+    """Build the 14-D clinical feature vector from HPV, age, and TCT only."""
     if "clinical_features" in batch and batch["clinical_features"] is not None:
-        return batch["clinical_features"].to(device, non_blocking=True).float()
+        features = batch["clinical_features"].to(device, non_blocking=True).float()
+        return _check_clinical_feature_dim(features, expected_dim)
     if "clinical_data" not in batch:
         return None
     clinical_data = batch["clinical_data"]
     if not isinstance(clinical_data, dict):
         return None
-    hpv = clinical_data.get("hpv", torch.zeros(batch_size, device=device))
-    age = clinical_data.get("age", torch.zeros(batch_size, device=device))
-    tct = clinical_data.get("tct", torch.zeros(batch_size, device=device))
-    hpv = hpv.to(device).float() if isinstance(hpv, torch.Tensor) else torch.as_tensor(hpv, device=device).float()
-    age = age.to(device).float() if isinstance(age, torch.Tensor) else torch.as_tensor(age, device=device).float()
-    if isinstance(tct, torch.Tensor):
-        tct = tct.to(device).long()
-    else:
-        tct = torch.zeros(batch_size, dtype=torch.long, device=device)
-    tct = torch.clamp(tct, 0, 4)
-    tct_onehot = F.one_hot(tct, num_classes=5).float()
-    return torch.cat([hpv.unsqueeze(1), age.unsqueeze(1), tct_onehot], dim=1)
+    hpv_values = clinical_data.get("hpv")
+    age_values = clinical_data.get("age")
+    tct_values = clinical_data.get("tct")
+    rows = [
+        {
+            "hpv": _batch_value(hpv_values, i, None),
+            "age": _batch_value(age_values, i, None),
+            "tct": _batch_value(tct_values, i, None),
+        }
+        for i in range(batch_size)
+    ]
+    features = torch.tensor([clinical_features_from_row(row) for row in rows], dtype=torch.float32, device=device)
+    return _check_clinical_feature_dim(features, expected_dim)
 
 
 def normalize_string_batch(values) -> list[str]:
@@ -357,6 +382,60 @@ def maybe_perturb_cached_features(features: torch.Tensor, config) -> torch.Tenso
         return features
     std = float(getattr(config, "train_feature_noise_std", 0.02))
     return features + torch.randn_like(features) * std
+
+
+def _read_csv_for_assertions(path: Path) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(path, encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        df = pd.read_csv(path, encoding="gbk")
+    assert_no_report_columns(df.columns)
+    return df
+
+
+def validate_no_report_cohort_scope(config, train_csv: Path, val_csv: Path, logger=print) -> None:
+    """Runtime guardrails for the locked no-report all-center experiment."""
+    expected_n = getattr(config, "expected_aligned_n", None)
+    clinical_dim = getattr(config, "clinical_feature_dim", None)
+    split_paths = [train_csv, val_csv]
+    external_csv = Path(getattr(config, "data_root")) / "external_test_labels.csv"
+    if external_csv.exists():
+        split_paths.append(external_csv)
+
+    dfs: list[pd.DataFrame] = []
+    for path in split_paths:
+        if not path.exists():
+            raise FileNotFoundError(f"Split CSV not found: {path}")
+        df = _read_csv_for_assertions(path)
+        if {"col_count", "oct_count"}.issubset(df.columns):
+            missing = df[(df["col_count"].astype(float) <= 0) | (df["oct_count"].astype(float) <= 0)]
+            if len(missing):
+                raise ValueError(f"{path} contains {len(missing)} rows without both colposcopy and OCT images.")
+        if clinical_dim is not None and int(clinical_dim) != 14:
+            raise ValueError(f"Current HPV/TCT/Age clinical feature mapping expects clinical_feature_dim=14, got {clinical_dim}.")
+        dfs.append(df)
+
+    if expected_n is not None and "all_center_patient_holdout_70_10_20" in str(getattr(config, "data_root")):
+        observed = sum(len(df) for df in dfs)
+        if observed != int(expected_n):
+            raise ValueError(f"All-center split N mismatch: train+val+external={observed}, expected {expected_n}.")
+
+    if getattr(config, "use_cached_patch_features", False):
+        cache_path = Path(getattr(config, "feature_cache_path"))
+        if not cache_path.exists():
+            raise FileNotFoundError(f"Cached feature file not found: {cache_path}")
+        payload = torch.load(cache_path, map_location="cpu")
+        features = payload.get("features", payload) if isinstance(payload, dict) else payload
+        if not isinstance(features, dict):
+            raise ValueError(f"Unexpected feature cache payload in {cache_path}")
+        needed = [case_key(row) for df in dfs for _, row in df.iterrows()]
+        missing_keys = [key for key in needed if key not in features]
+        if missing_keys:
+            preview = ", ".join(missing_keys[:3])
+            raise KeyError(f"{len(missing_keys)} split cases missing from feature cache. Examples: {preview}")
+        if expected_n is not None and len(features) != int(expected_n):
+            logger(f"⚠️ feature cache case count is {len(features)}; expected locked cohort {expected_n}.")
+    logger("✅ no-report cohort scope assertions passed")
 
 
 def get_patch_features_from_batch(batch, device, config, training: bool):
@@ -469,7 +548,8 @@ def train_epoch(
     for batch_idx, batch in enumerate(pbar):
         labels = batch['label'].to(device, non_blocking=True)
         center_labels = batch['center_idx'].to(device, non_blocking=True)
-        # 🔥 3.2改动：提取image_names和clinical_info（用于VLM检索）
+        # 3.2 compatibility: image_names are retained for model API compatibility.
+        # 当前实验不使用检查报告；clinical_info 仅包含非报告型临床变量。
         # DataLoader的默认collate_fn会将字符串列表合并，所以这里直接使用
         image_names = normalize_string_batch(batch['image_names'])
         clinical_info = normalize_string_batch(batch.get('clinical_info', ""))
@@ -491,7 +571,12 @@ def train_epoch(
                 f"image_names类型: {type(image_names)}, 值: {image_names[:3] if len(image_names) > 3 else image_names}"
             )
         
-        clinical_features = clinical_features_from_batch(batch, B_oct, device)
+        clinical_features = clinical_features_from_batch(
+            batch,
+            B_oct,
+            device,
+            expected_dim=getattr(config, "clinical_feature_dim", None),
+        )
         oct_features_patch, colpo_features_patch, clinical_features, clinical_info = apply_modality_dropout(
             oct_features_patch,
             colpo_features_patch,
@@ -763,7 +848,8 @@ def validate(model, dataloader, criterion, device, epoch, config, log_print=None
         for batch_idx, batch in enumerate(pbar):
             labels = batch['label'].to(device, non_blocking=True)
             center_labels = batch['center_idx'].to(device, non_blocking=True)
-            # 🔥 3.2改动：提取image_names和clinical_info
+            # 🔥 3.2改动：提取image_names和clinical_info。
+            # 当前实验不使用检查报告；clinical_info 仅包含非报告型临床变量。
             image_names = normalize_string_batch(batch['image_names'])
             clinical_info = normalize_string_batch(batch.get('clinical_info', ""))
             
@@ -780,7 +866,12 @@ def validate(model, dataloader, criterion, device, epoch, config, log_print=None
                     f"验证阶段: image_names长度({len(image_names)})与batch大小({B_oct_val})不匹配！"
                 )
 
-            clinical_features = clinical_features_from_batch(batch, B_oct_val, device)
+            clinical_features = clinical_features_from_batch(
+                batch,
+                B_oct_val,
+                device,
+                expected_dim=getattr(config, "clinical_feature_dim", None),
+            )
             
             # 前向传播（3.2改动：使用image_names和clinical_info）
             # [关键修改] 验证时也设置 return_loss_components=True 以获取 Recall
@@ -996,7 +1087,7 @@ def main():
     import argparse
     
     # 解析命令行参数
-    parser = argparse.ArgumentParser(description='Bio-COT 3.1 训练脚本')
+    parser = argparse.ArgumentParser(description='HyDRA-CoE no-report training script')
     parser.add_argument('--config', type=str, default=None,
                        help='配置文件路径（可选，默认使用 config.py）')
     parser.add_argument('--gpu', type=int, default=None,
@@ -1080,17 +1171,19 @@ def main():
         log_f.flush()
     
     log_print("=" * 80)
-    log_print("Bio-COT 3.2 Enhanced Logic Loop: 融合3.1和4.0的优势")
-    log_print("核心升级:")
-    log_print("  1. Adaptive Modality Gating (自适应模态门控) - 3.1")
-    log_print("  2. Enhanced Visual Notes (Cross-Attention机制) - 3.1")
-    log_print("  3. Semantic-Visual Alignment Loop (语义-视觉对齐闭环) - 3.1")
-    log_print("  4. Frozen VLM + Trainable Adapter (计算效率) - 4.0")
-    log_print("  5. Dynamic Knowledge Generation (知识复杂度) - 4.0")
+    log_print("HyDRA-CoE: Guideline-conditioned Reliability Posterior Fusion for Multimodal Cervical Lesion Triage")
+    log_print("Inputs: colposcopy + OCT + HPV/TCT/Age clinical text")
+    log_print("No examination reports are used.")
+    log_print("No VLM evidence cache is used in the main experiment.")
+    log_print("核心模块:")
+    log_print("  1. Adaptive Modality Gating / variational reliability posterior")
+    log_print("  2. OCT and colposcopy visual feature fusion")
+    log_print("  3. Structured HPV/TCT/Age clinical text variables")
+    log_print("  4. CoE supervision from supervised labels only")
     log_print("=" * 80)
     log_print(f"数据路径: {config.data_root}")
-    log_print(f"VLM缓存路径: {config.vlm_json_path}")
-    log_print(f"Text Encoder: {config.text_model_name}")
+    log_print(f"VLM evidence cache: {'enabled (legacy only)' if getattr(config, 'use_vlm_retriever', False) else 'disabled'}")
+    log_print(f"Text Encoder: {config.text_model_name} (not used for VLM evidence cache when disabled)")
     log_print(f"随机种子: {args.seed}")
     log_print(f"模块配置:")
     log_print(f"  - use_visual_notes: {config.use_visual_notes}")
@@ -1118,6 +1211,7 @@ def main():
     val_csv = Path(args.val_csv) if args.val_csv else Path(config.data_root) / 'val_labels.csv'
     log_print(f"训练CSV: {train_csv}")
     log_print(f"验证CSV: {val_csv}")
+    validate_no_report_cohort_scope(config, train_csv, val_csv, logger=log_print)
     
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -1130,7 +1224,17 @@ def main():
         if not feature_cache_path:
             raise ValueError("use_cached_patch_features=True 但未设置 feature_cache_path")
         log_print(f"  📦 使用缓存patch特征: {feature_cache_path}")
-        train_dataset = CachedPatchFeatureDataset(train_csv, feature_cache_path)
+        train_dataset = CachedPatchFeatureDataset(
+            train_csv,
+            feature_cache_path,
+            expected_clinical_feature_dim=getattr(config, "clinical_feature_dim", None),
+            expected_aligned_n=getattr(config, "expected_aligned_n", None),
+            expected_case_index_csv=Path(__file__).resolve().parents[1]
+            / "paper_revision"
+            / "splits"
+            / "full_multimodal_resplit"
+            / "final_1897_case_index.csv",
+        )
     else:
         train_dataset = FiveCentersMultimodalDatasetV3_2(
             csv_path=str(train_csv),
@@ -1143,7 +1247,17 @@ def main():
     log_print(f"  ✅ 训练集加载完成: {len(train_dataset)} 个样本")
     
     if getattr(config, "use_cached_patch_features", False):
-        val_dataset = CachedPatchFeatureDataset(val_csv, getattr(config, "feature_cache_path"))
+        val_dataset = CachedPatchFeatureDataset(
+            val_csv,
+            getattr(config, "feature_cache_path"),
+            expected_clinical_feature_dim=getattr(config, "clinical_feature_dim", None),
+            expected_aligned_n=getattr(config, "expected_aligned_n", None),
+            expected_case_index_csv=Path(__file__).resolve().parents[1]
+            / "paper_revision"
+            / "splits"
+            / "full_multimodal_resplit"
+            / "final_1897_case_index.csv",
+        )
     else:
         val_dataset = FiveCentersMultimodalDatasetV3_2(
             csv_path=str(val_csv),
@@ -1203,7 +1317,7 @@ def main():
     )
     
     # 创建模型
-    log_print("\n📊 正在创建Bio-COT 3.2模型...")
+    log_print("\n📊 正在创建 HyDRA-CoE 模型...")
     try:
         model = create_bio_cot_v3_2(config)
     except Exception as e:
@@ -1221,7 +1335,7 @@ def main():
     model = model.to(device)
     
     # 🔥 调试：检查模型属性
-    log_print(f"   模型 use_vlm_retriever: {getattr(model, 'use_vlm_retriever', 'N/A')}")
+    log_print(f"   模型 use_vlm_retriever: {getattr(model, 'use_vlm_retriever', 'N/A')} (main experiment should be False)")
     log_print(f"   模型 has learnable_knowledge_base: {hasattr(model, 'learnable_knowledge_base')}")
     log_print(f"   模型 has note_projector: {hasattr(model, 'note_projector')}")
     if hasattr(model, 'learnable_knowledge_base'):

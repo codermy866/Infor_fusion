@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Cervix-domain visual-language adaptation experiments.
+"""Cervix-domain adaptation experiments.
 
 These configs keep the official cached patient-level ViT patch features fixed
 unless a feature-space visual adapter is explicitly enabled. This makes the
 screening runs cheap and avoids changing the frozen external-evaluation split.
+Current main experiments do not use VLM evidence caches.
 """
 
 from dataclasses import dataclass
@@ -53,9 +54,9 @@ class CervixAdaptVisualAdapterOnlyConfig(CervixAdaptStaticPriorConfig):
 @dataclass
 class CervixAdaptBERTAdapterOnlyConfig(CervixAdaptStaticPriorConfig):
     experiment_name: str = "CervixAdapt_BERTAdapterOnly"
-    experiment_description: str = "Frozen PubMedBERT/VLM semantic anchor with trainable text adapters."
+    experiment_description: str = "Legacy text-adapter sensitivity config; VLM evidence cache disabled for current experiments."
 
-    use_vlm_retriever: bool = True
+    use_vlm_retriever: bool = False
     use_visual_domain_adapter: bool = False
     train_text_encoder: bool = False
     text_encoder_trainable_layers: int = 0
@@ -69,7 +70,7 @@ class CervixAdaptBERTAdapterOnlyConfig(CervixAdaptStaticPriorConfig):
 @dataclass
 class CervixAdaptVisualBERTAdapterConfig(CervixAdaptBERTAdapterOnlyConfig):
     experiment_name: str = "CervixAdapt_VisualBERTAdapter"
-    experiment_description: str = "Residual visual feature adapters plus frozen PubMedBERT/VLM semantic adapter."
+    experiment_description: str = "Residual visual feature adapters plus internal semantic adapter; no VLM evidence cache."
 
     use_visual_domain_adapter: bool = True
     visual_adapter_bottleneck: int = 192
@@ -83,7 +84,7 @@ class CervixAdaptVisualBERTAdapterConfig(CervixAdaptBERTAdapterOnlyConfig):
 @dataclass
 class CervixAdaptBERTLastLayerFTConfig(CervixAdaptBERTAdapterOnlyConfig):
     experiment_name: str = "CervixAdapt_BERTLastLayerFT"
-    experiment_description: str = "PubMedBERT/VLM semantic anchor with the last BERT layer fine-tuned."
+    experiment_description: str = "Legacy text fine-tuning sensitivity config; not used by the current no-report main experiment."
 
     train_text_encoder: bool = True
     text_encoder_trainable_layers: int = 1
@@ -97,7 +98,7 @@ class CervixAdaptBERTLastLayerFTConfig(CervixAdaptBERTAdapterOnlyConfig):
 @dataclass
 class CervixAdaptVisualFullTextFTConfig(CervixAdaptVisualBERTAdapterConfig):
     experiment_name: str = "CervixAdapt_VisualFullTextFT"
-    experiment_description: str = "Residual visual adapters plus full PubMedBERT fine-tuning at a conservative LR."
+    experiment_description: str = "Legacy visual/text sensitivity config; not used by the current no-report main experiment."
 
     train_text_encoder: bool = True
     text_encoder_trainable_layers: int = -1

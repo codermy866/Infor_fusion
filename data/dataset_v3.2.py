@@ -19,6 +19,11 @@ from torchvision import transforms
 import json
 from typing import Optional, Dict
 
+from paper_revision.scripts.clinical_variable_mapping import (
+    clinical_features_from_row,
+    clinical_info_from_row,
+)
+
 # 添加项目根目录到路径
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -29,7 +34,8 @@ from experiments.exp_5centers.train_bio_cot_5centers_multimodal import FiveCente
 class FiveCentersMultimodalDatasetV3_2(FiveCentersMultimodalDataset):
     """
     5中心多模态数据集加载器（Bio-COT 3.2版本）
-    关键改进：返回图像文件名（用于VLM检索），不再需要预计算嵌入
+    Legacy loader retained for compatibility. Current main experiments do not
+    use VLM evidence caches; image names are returned only for API compatibility.
     """
     
     def __init__(
@@ -57,13 +63,13 @@ class FiveCentersMultimodalDatasetV3_2(FiveCentersMultimodalDataset):
             max_col_images=max_col_images,
             balance_negative_frames=balance_negative_frames
         )
-        print(f"✅ Bio-COT 3.2数据集初始化完成（使用VLM动态检索）")
+        print(f"✅ Bio-COT 3.2数据集初始化完成（no VLM evidence cache in current main experiment）")
     
     def __getitem__(self, idx):
         """
         获取一个样本（Bio-COT 3.2版本）
         
-        关键改进：返回图像文件名列表，用于VLM检索
+        返回图像文件名列表，仅为legacy模型API兼容；当前主实验不使用VLM evidence cache。
         
         Returns:
             dict: 包含图像、文件名、临床数据、标签等
@@ -71,7 +77,7 @@ class FiveCentersMultimodalDatasetV3_2(FiveCentersMultimodalDataset):
         # 调用父类方法获取基础数据
         sample = super().__getitem__(idx)
         
-        # ⚠️ 关键改动：提取图像文件名列表（用于VLM检索）
+        # 提取图像文件名列表，仅为legacy模型API兼容。
         row = self.df.iloc[idx]
         
         # 1. 提取OCT图像文件名（使用第一帧作为代表）
@@ -95,17 +101,12 @@ class FiveCentersMultimodalDatasetV3_2(FiveCentersMultimodalDataset):
         else:
             sample['col_image_name'] = "unknown.jpg"
         
-        # 3. 构造临床信息字符串（用于VLM增强）
-        clinical_data = sample.get('clinical_data', {})
-        hpv = clinical_data.get('hpv', 0)
-        tct = clinical_data.get('tct', 'NILM')
-        age = clinical_data.get('age', 50)
-        
-        clinical_info_str = f"HPV: {'positive' if hpv > 0 else 'negative'}, TCT: {tct}, Age: {int(age)}"
+        # 3. 构造临床信息字符串；仅包含 HPV/TCT/Age，不包含报告或标签。
+        clinical_info_str = clinical_info_from_row(row)
         sample['clinical_info_str'] = clinical_info_str
+        sample['clinical_features'] = torch.tensor(clinical_features_from_row(row), dtype=torch.float32)
         
         # 4. 为了兼容，返回主要的图像文件名（OCT优先，因为OCT是主要模态）
         sample['image_name'] = sample['oct_image_name']
         
         return sample
-

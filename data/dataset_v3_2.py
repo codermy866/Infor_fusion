@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Bio-COT 3.2: 数据集加载器
-关键改进：返回图像文件名（用于VLM检索）- 从4.0引入
+当前主实验不使用 VLM evidence cache；返回图像文件名仅为模型API兼容。
 保留3.1的基础功能
 """
 
@@ -20,6 +20,12 @@ from torchvision import transforms
 import json
 from typing import Optional, Dict
 
+from paper_revision.scripts.clinical_variable_mapping import (
+    assert_no_report_columns,
+    clinical_features_from_row,
+    clinical_info_from_row,
+)
+
 # 添加项目根目录到路径
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -33,14 +39,39 @@ if local_parent_path.exists():
 else:
     raise ImportError(f"无法找到FiveCentersMultimodalDataset父类，请检查路径: {local_parent_path}")
 
+REPORT_LIKE_COLUMNS = {
+    "report",
+    "report_text",
+    "clinical_report",
+    "diagnosis_report",
+    "generated_report",
+    "exam_report",
+    "examination_report",
+    "检查报告",
+    "诊断报告",
+}
+
+
+def drop_report_like_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove report-like columns; not used in current experiments."""
+    report_cols = [
+        col
+        for col in df.columns
+        if str(col).strip().lower() in REPORT_LIKE_COLUMNS
+        or "report" in str(col).strip().lower()
+    ]
+    if report_cols:
+        return df.drop(columns=report_cols)
+    return df
+
 
 class FiveCentersMultimodalDatasetV3_2(FiveCentersMultimodalDataset):
     """
     5中心多模态数据集加载器（Bio-COT 3.2版本）
     
-    关键改进（从4.0引入）：
-    1. 返回图像文件名（用于VLM检索）
-    2. 返回临床信息字符串（用于VLM增强）
+    当前主实验：
+    1. 返回图像文件名（仅为模型API兼容，不启用VLM evidence cache）
+    2. 返回临床信息字符串（仅包含HPV/TCT/Age等非报告变量）
     
     保留3.1的基础功能：
     - 多模态图像加载（OCT + Colposcopy）
@@ -73,6 +104,8 @@ class FiveCentersMultimodalDatasetV3_2(FiveCentersMultimodalDataset):
             df = pd.read_csv(csv_path, encoding='utf-8')
         except:
             df = pd.read_csv(csv_path, encoding='gbk')
+        assert_no_report_columns(df.columns)
+        df = drop_report_like_columns(df)
         
         # 检查是否是新格式（有OCT列但没有oct_paths列）
         if 'OCT' in df.columns and 'oct_paths' not in df.columns:
@@ -97,7 +130,7 @@ class FiveCentersMultimodalDatasetV3_2(FiveCentersMultimodalDataset):
         """
         获取一个样本（Bio-COT 3.2版本）
         
-        关键改进：返回图像文件名列表，用于VLM检索
+        返回图像文件名和非报告临床信息；当前主实验不使用VLM evidence cache。
         
         Returns:
             dict: 包含图像、文件名、临床数据、标签等
@@ -105,11 +138,11 @@ class FiveCentersMultimodalDatasetV3_2(FiveCentersMultimodalDataset):
         # 调用父类方法获取基础数据
         sample = super().__getitem__(idx)
         
-        # ⚠️ 关键改动：提取图像文件名列表（从4.0引入）
+        # 提取图像文件名列表，仅为模型API兼容。
         row = self.df.iloc[idx]
         
         # 1. 提取OCT图像文件名
-        oct_paths_str = row['oct_paths']
+        oct_paths_str = row.get('oct_paths', row.get('OCT_paths', ''))
         if pd.notna(oct_paths_str):
             # 支持分号和逗号分隔
             if ';' in str(oct_paths_str):
@@ -122,13 +155,13 @@ class FiveCentersMultimodalDatasetV3_2(FiveCentersMultimodalDataset):
             
             # 提取文件名（不含路径）
             oct_image_names = [Path(p).name for p in oct_paths if p]
-            # 返回第一帧的文件名作为代表（用于VLM检索）
+            # 返回第一帧的文件名作为代表（主实验不启用VLM evidence cache）
             sample['oct_image_name'] = oct_image_names[0] if oct_image_names else "unknown.jpg"
         else:
             sample['oct_image_name'] = "unknown.jpg"
         
         # 2. 提取Colposcopy图像文件名
-        col_paths_str = row['col_paths']
+        col_paths_str = row.get('col_paths', row.get('colposcopy_paths', ''))
         if pd.notna(col_paths_str):
             # 支持分号和逗号分隔
             if ';' in str(col_paths_str):
@@ -144,14 +177,11 @@ class FiveCentersMultimodalDatasetV3_2(FiveCentersMultimodalDataset):
         else:
             sample['col_image_name'] = "unknown.jpg"
         
-        # 3. 构造临床信息字符串（用于VLM增强）
-        clinical_data = sample.get('clinical_data', {})
-        hpv = clinical_data.get('hpv', 0)
-        tct = clinical_data.get('tct', 'NILM')
-        age = clinical_data.get('age', 50)
-        
-        clinical_info_str = f"HPV: {'positive' if hpv > 0 else 'negative'}, TCT: {tct}, Age: {int(age)}"
+        # 3. 构造临床信息字符串。当前实验不使用检查报告；
+        #    clinical_info 必须严格来自 HPV、TCT、Age，且不包含病理标签。
+        clinical_info_str = clinical_info_from_row(row)
         sample['clinical_info_str'] = clinical_info_str
+        sample['clinical_features'] = torch.tensor(clinical_features_from_row(row), dtype=torch.float32)
         
         # 4. 为了兼容，返回主要的图像文件名（OCT优先）
         # 如果模型需要单个文件名，使用oct_image_name
@@ -168,6 +198,8 @@ class FiveCentersMultimodalDatasetV3_2(FiveCentersMultimodalDataset):
     def _convert_new_format_to_old(self, df: pd.DataFrame, csv_path: str) -> pd.DataFrame:
         """将新格式CSV转换为父类期望的格式"""
         import glob
+        assert_no_report_columns(df.columns)
+        df = drop_report_like_columns(df)
         
         # 重命名列
         df = df.rename(columns={

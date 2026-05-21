@@ -32,12 +32,11 @@ class AblationConfig_MultiModalFusion(BioCOT_v3_2_Config):
     use_clinical_evolver: bool = True
     use_text_adapter: bool = True
     
-    # 保留VLM知识增强
+    # Current no-report main experiment uses no VLM evidence cache.
     use_visual_notes: bool = True
-    use_vlm_retriever: bool = True
+    use_vlm_retriever: bool = False
     
     # 输出目录
     output_dir: str = 'ablation_studies/w/o_multi_modal_fusion/results'
     checkpoint_dir: str = 'ablation_studies/w/o_multi_modal_fusion/checkpoints'
     log_dir: str = 'ablation_studies/w/o_multi_modal_fusion/logs'
-

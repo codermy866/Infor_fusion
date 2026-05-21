@@ -115,6 +115,26 @@ def select_threshold(y_true: Iterable[int], y_prob: Iterable[float], rule: str =
         return 0.5
     best_threshold = 0.5
     best_score = -np.inf
+    if rule.startswith("max_specificity_at_sensitivity:"):
+        target = float(rule.split(":", 1)[1])
+        candidates = []
+        closest = (float("inf"), -np.inf, 0.5)
+        for threshold in thresholds:
+            y_pred = (y_prob_arr >= threshold).astype(int)
+            tn, fp, fn, tp = confusion_counts(y_true_arr, y_pred)
+            sensitivity = tp / (tp + fn + EPS)
+            specificity = tn / (tn + fp + EPS)
+            distance = abs(sensitivity - target)
+            if distance < closest[0] or (distance == closest[0] and specificity > closest[1]):
+                closest = (distance, specificity, float(threshold))
+            if sensitivity >= target:
+                candidates.append((specificity, sensitivity, float(threshold)))
+        if candidates:
+            candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+            return float(candidates[0][2])
+        print(f"WARNING: no threshold reached sensitivity >= {target:.3f}; using closest sensitivity threshold.")
+        return float(closest[2])
+
     for threshold in thresholds:
         y_pred = (y_prob_arr >= threshold).astype(int)
         tn, fp, fn, tp = confusion_counts(y_true_arr, y_pred)

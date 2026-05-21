@@ -3,6 +3,9 @@
 """
 Bio-Invariant Distributional Anchoring (BIDA) Model
 核心框架：流形投影与正交解耦
+
+Legacy optional VLM-related arguments in this module are not used by the
+current HyDRA-CoE no-report main experiment.
 """
 
 import torch
@@ -220,4 +223,3 @@ class BIDAModel(nn.Module):
             }
         
         return output
-

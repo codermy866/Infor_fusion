@@ -33,10 +33,9 @@ class AblationConfig_CrossCenterAdaptation(BioCOT_v3_2_Config):
     use_clinical_evolver: bool = True
     use_text_adapter: bool = True
     use_visual_notes: bool = True
-    use_vlm_retriever: bool = True
+    use_vlm_retriever: bool = False
     
     # 输出目录
     output_dir: str = 'ablation_studies/w/o_cross_center_adaptation/results'
     checkpoint_dir: str = 'ablation_studies/w/o_cross_center_adaptation/checkpoints'
     log_dir: str = 'ablation_studies/w/o_cross_center_adaptation/logs'
-

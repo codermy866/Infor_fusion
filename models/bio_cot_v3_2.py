@@ -1,17 +1,24 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
+HyDRA-CoE main model.
+
+Current no-report experiments use colposcopy images, OCT images, and
+HPV/TCT/Age clinical text variables. Examination reports and VLM evidence
+caches are not used in the main experiment. Legacy VLM retriever hooks remain
+only for inactive historical ablations.
+
 Bio-COT 3.2 Enhanced (整合5.0所有优势)
 融合3.1、4.0和5.0的优势：
 1. 保留3.1的所有优点（显式对齐、自适应模态融合、增强Visual Notes）
-2. 引入4.0的优势（Frozen VLM + Trainable Adapter、动态知识生成）
+2. 当前主实验禁用历史 VLM evidence cache / retriever 路径
 3. 🔥 整合5.0的优势：
    - 分层多尺度特征提取（HierarchicalViT）
    - 噪声感知流形超连接（NA-mHC）
    - 动态临床查询演化（ClinicalEvolver）
    - 激进正则化策略（Dropout 0.4, DropPath 0.2）
    - 正交损失（解耦方式）
-   - Text Adapter（VLM集成）
+   - Text Adapter（内部语义锚点适配；主实验不使用VLM evidence cache）
 """
 
 import sys
@@ -183,6 +190,7 @@ class VariationalReliabilityInference(nn.Module):
             "mu": mus,
             "logvar": logvars,
             "samples": samples,
+            "precision": {name: torch.exp(-logvars[name]).mean(dim=-1, keepdim=True) for name in self.modalities},
             "weights": weight_dict,
             "kl": torch.stack(kl_terms).mean(),
         }
@@ -640,7 +648,7 @@ class BioCOT_v3_2(nn.Module):
     Bio-COT 3.2 Enhanced Version (整合5.0所有优势)
     融合3.1、4.0和5.0的优势：
     - 3.1: 显式对齐、自适应模态融合、增强Visual Notes
-    - 4.0: Frozen VLM + Trainable Adapter、动态知识生成
+    - Current main experiment: no VLM evidence cache or examination reports
     - 5.0: 分层多尺度特征、噪声感知融合、动态临床演化、激进正则化、正交损失
     """
     def __init__(
@@ -669,7 +677,7 @@ class BioCOT_v3_2(nn.Module):
         mhc_latent_dim: int = 256,  # NA-mHC的潜在维度
         sinkhorn_iters: int = 3,  # Sinkhorn迭代次数
         mhc_epsilon: float = 0.05,  # Sinkhorn epsilon
-        use_text_adapter: bool = True,  # 是否使用Text Adapter（5.0的VLM集成）
+        use_text_adapter: bool = True,  # 是否使用内部语义锚点Text Adapter
         use_variational_reliability: bool = True,
         use_center_aware_reliability: bool = True,
         fusion_strategy: str = "gated",
@@ -685,6 +693,8 @@ class BioCOT_v3_2(nn.Module):
         visual_adapter_dropout: float = 0.1,
         train_text_encoder: bool = False,
         text_encoder_trainable_layers: int = 0,
+        clinical_feature_dim: int = 14,
+        load_clinical_semantic_adapter_path: Optional[str] = None,
         asccp_prototype_path: Optional[str] = None,
         use_text_derived_asccp: bool = True,
         asccp_text_model_name: Optional[str] = None,
@@ -692,6 +702,8 @@ class BioCOT_v3_2(nn.Module):
     ):
         super().__init__()
         self.embed_dim = embed_dim
+        self.hidden_dim = hidden_dim
+        self.clinical_feature_dim = int(clinical_feature_dim)
         self.num_centers = num_centers
         self.use_visual_notes = use_visual_notes
         self.use_ot = use_ot
@@ -729,14 +741,14 @@ class BioCOT_v3_2(nn.Module):
             self.num_stages = 1
         
         # ============================================================
-        # 🔥 关键改动1：替换为VLMAugmentedRetriever（4.0的优势）
+        # Legacy VLM retriever hook
         # ============================================================
-        # 支持消融实验：可以禁用VLM Retriever
-        # 注意：use_vlm_retriever 将在 create_bio_cot_v3_2 中设置
-        # 这里先初始化为 True，后续会被覆盖
-        self.use_vlm_retriever = True  # 默认启用，可通过config覆盖
+        # Not used in current HyDRA-CoE no-report main experiments.
+        # The factory may enable this only for inactive historical ablations.
+        self.use_vlm_retriever = False
         
-        # 创建知识检索器（如果vlm_json_path存在）
+        # Create legacy knowledge retriever only if an explicit cache is supplied.
+        # Current main configs pass None.
         if vlm_json_path is not None:
             self.knowledge_retriever = VLMAugmentedRetriever(
                 vlm_json_path=vlm_json_path,
@@ -764,7 +776,7 @@ class BioCOT_v3_2(nn.Module):
             torch.randn(1, embed_dim) * 0.02  # 小的随机初始化
         )
         
-        # 🔥 5.0优势6：Text Adapter（VLM集成增强）
+        # Text adapter for internal semantic anchors; no VLM evidence cache is used.
         if use_text_adapter:
             self.text_adapter = nn.Sequential(
                 nn.Linear(embed_dim, embed_dim),
@@ -828,13 +840,13 @@ class BioCOT_v3_2(nn.Module):
         
         # 临床状态初始化
         self.clinical_init = nn.Sequential(
-            nn.Linear(7, hidden_dim),  # 假设临床特征维度为7
+            nn.Linear(self.clinical_feature_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.Dropout(dropout_rate),
             nn.GELU(),
         )
         self.clinical_feature_projector = nn.Sequential(
-            nn.Linear(7, embed_dim),
+            nn.Linear(self.clinical_feature_dim, embed_dim),
             nn.LayerNorm(embed_dim),
             nn.GELU(),
             nn.Dropout(dropout_rate * 0.5),
@@ -1022,11 +1034,11 @@ class BioCOT_v3_2(nn.Module):
         self,
         f_oct: torch.Tensor,     # [B, N, D] 或 [B, C, H, W]（如果使用分层）
         f_colpo: torch.Tensor,   # [B, N, D] 或 [B, C, H, W]（如果使用分层）
-        image_names: List[str],  # 图像文件名列表（用于VLM检索）
+        image_names: List[str],  # 图像文件名列表（legacy retriever兼容；主实验不使用VLM cache）
         clinical_info: Optional[List[str]] = None,  # 临床信息（可选）
         center_labels: Optional[torch.Tensor] = None,  # 中心标签
         labels: Optional[torch.Tensor] = None,
-        clinical_features: Optional[torch.Tensor] = None,  # 🔥 5.0新增：临床特征向量 [B, 7]
+        clinical_features: Optional[torch.Tensor] = None,  # structured HPV/TCT/Age features [B, clinical_feature_dim]
         return_loss_components: bool = False,
         current_beta: Optional[float] = None
     ) -> Dict[str, torch.Tensor]:
@@ -1039,7 +1051,7 @@ class BioCOT_v3_2(nn.Module):
             image_names: 图像文件名列表（必需）
             clinical_info: 临床信息列表（可选）
             center_labels: 中心标签（用于对抗损失和噪声感知）
-            clinical_features: 临床特征向量 [B, 7]（5.0新增，用于ClinicalEvolver）
+            clinical_features: HPV/TCT/Age structured vector [B, clinical_feature_dim]
             return_loss_components: 是否返回损失组件
             current_beta: 当前beta值（用于Visual Notes）
         """
@@ -1067,10 +1079,15 @@ class BioCOT_v3_2(nn.Module):
             
             # 初始化临床状态
             if clinical_features is not None:
+                if clinical_features.shape[-1] != self.clinical_feature_dim:
+                    raise ValueError(
+                        f"clinical_features dim mismatch: got {clinical_features.shape[-1]}, "
+                        f"expected {self.clinical_feature_dim}"
+                    )
                 clin_state = self.clinical_init(clinical_features)  # [B, hidden_dim]
             else:
                 # 如果没有提供clinical_features，使用零向量
-                clin_state = torch.zeros(B, self.embed_dim, device=device)
+                clin_state = torch.zeros(B, self.hidden_dim, device=device)
             
             final_feat = None
             all_noise_probs = []
@@ -1112,14 +1129,14 @@ class BioCOT_v3_2(nn.Module):
         # --- Step 1: 语义锚点生成（使用VLMAugmentedRetriever或静态嵌入）---
         # 仿照exp_bio3.0_improved的方案：使用note_projector处理嵌入
         if self.use_vlm_retriever and self.knowledge_retriever is not None:
-            # 使用VLM Retriever获取动态知识嵌入
+            # Legacy inactive path: VLM retriever is not used in the current main experiment.
             note_embeds = self.knowledge_retriever(
                 image_names=image_names,
                 clinical_info=clinical_info,
                 device=str(device)
             )  # [B, embed_dim]
         else:
-            # 禁用VLM Retriever：使用可学习的静态嵌入（消融实验）
+            # Main no-report path: use learnable static semantic anchor.
             # 仿照exp_bio3.0_improved：使用可学习参数作为note_embeds
             note_embeds = self.learnable_knowledge_base.expand(B, -1)  # [B, embed_dim]
         
@@ -1137,6 +1154,11 @@ class BioCOT_v3_2(nn.Module):
             clinical_tensor = clinical_features.float()
             if clinical_tensor.dim() == 1:
                 clinical_tensor = clinical_tensor.unsqueeze(0)
+            if clinical_tensor.shape[-1] != self.clinical_feature_dim:
+                raise ValueError(
+                    f"clinical_features dim mismatch: got {clinical_tensor.shape[-1]}, "
+                    f"expected {self.clinical_feature_dim}"
+                )
             structured_prior = self.clinical_feature_projector(clinical_tensor)
             clinical_scale = torch.clamp(self.clinical_prior_mix, min=0.0, max=1.0)
             z_sem = self.clinical_prior_norm(z_sem + clinical_scale * structured_prior)
@@ -1416,10 +1438,10 @@ class BioCOT_v3_2(nn.Module):
 
 def create_bio_cot_v3_2(config):
     """Factory function to create BioCOT_v3_2 model (整合5.0优势)"""
-    # 检查是否禁用VLM Retriever
-    use_vlm_retriever = getattr(config, 'use_vlm_retriever', True)
+    # Current main experiment disables VLM evidence cache by default.
+    use_vlm_retriever = getattr(config, 'use_vlm_retriever', False)
     
-    # 如果禁用VLM Retriever，vlm_json_path可以为None
+    # If disabled, vlm_json_path remains None.
     vlm_json_path = getattr(config, 'vlm_json_path', None) if use_vlm_retriever else None
     
     model = BioCOT_v3_2(
@@ -1463,16 +1485,41 @@ def create_bio_cot_v3_2(config):
         visual_adapter_dropout=getattr(config, 'visual_adapter_dropout', 0.1),
         train_text_encoder=getattr(config, 'train_text_encoder', False),
         text_encoder_trainable_layers=getattr(config, 'text_encoder_trainable_layers', 0),
+        clinical_feature_dim=getattr(config, 'clinical_feature_dim', 14),
+        load_clinical_semantic_adapter_path=getattr(config, 'load_clinical_semantic_adapter_path', None),
         asccp_prototype_path=getattr(config, 'asccp_prototype_path', None),
         use_text_derived_asccp=getattr(config, 'use_text_derived_asccp', True),
         asccp_text_model_name=getattr(config, 'asccp_text_model_name', None),
         asccp_text_local_files_only=getattr(config, 'asccp_text_local_files_only', True),
     )
-    # 设置是否使用VLM Retriever（用于消融实验）
+    # Set legacy retriever flag. Main no-report configs keep this False.
     model.use_vlm_retriever = use_vlm_retriever
     if getattr(config, 'freeze_visual_encoder', False) and getattr(model, 'visual_encoder', None) is not None:
         for param in model.visual_encoder.parameters():
             param.requires_grad = False
+    adapter_path = getattr(config, 'load_clinical_semantic_adapter_path', None)
+    if adapter_path:
+        ckpt_path = Path(adapter_path)
+        if ckpt_path.exists():
+            payload = torch.load(ckpt_path, map_location='cpu')
+            adapter_modules = [
+                'note_projector',
+                'text_adapter',
+                'clinical_feature_projector',
+                'align_proj_img',
+                'align_proj_text',
+                'shared_align_proj',
+            ]
+            loaded_modules = []
+            for module_name in adapter_modules:
+                state = payload.get(module_name) if isinstance(payload, dict) else None
+                module = getattr(model, module_name, None)
+                if state is not None and module is not None:
+                    missing, unexpected = module.load_state_dict(state, strict=False)
+                    loaded_modules.append(f"{module_name}(missing={len(missing)}, unexpected={len(unexpected)})")
+            print(f"✅ Loaded clinical semantic adapter modules from {ckpt_path}: {', '.join(loaded_modules) or 'none'}")
+        else:
+            print(f"⚠️ Clinical semantic adapter checkpoint not found: {ckpt_path}")
     domain_pretrain_path = getattr(config, 'load_domain_pretrain_path', None)
     if domain_pretrain_path:
         ckpt_path = Path(domain_pretrain_path)
@@ -1490,3 +1537,7 @@ def create_bio_cot_v3_2(config):
         else:
             print(f"⚠️ Stage-1 checkpoint not found: {ckpt_path}")
     return model
+
+
+# Paper-facing alias; keep create_bio_cot_v3_2 for backward-compatible imports.
+create_hydra_coe = create_bio_cot_v3_2

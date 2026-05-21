@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-Bio-COT 3.2 (Enhanced Logic Loop Version) 配置文件
-融合3.1和4.0的优势：
-1. 保留3.1的所有优点（显式对齐、自适应模态融合、增强Visual Notes）
-2. 引入4.0的优势（Frozen VLM + Trainable Adapter、动态知识生成）
+"""HyDRA-CoE no-report main experiment configuration.
+
+Current main experiments use colposcopy images, OCT images, and HPV/TCT/Age
+clinical text variables only. Examination reports and VLM evidence caches are
+not used in the main experiment.
 """
 
 from pathlib import Path
@@ -15,13 +15,16 @@ from typing import Optional
 @dataclass
 class BioCOT_v3_2_Config:
     """Bio-COT 3.2 Enhanced 配置类"""
+    display_method_name: str = "HyDRA-CoE"
+    paper_method_name: str = "HyDRA-CoE"
+    paper_method_full_name: str = "Guideline-conditioned Reliability Posterior Fusion for Multimodal Cervical Lesion Triage"
     
     # 数据路径
-    data_root: str = '/data2/hmy/VLM_Caus_Rm_Mics/data/5centers_multi_leave_centers_out'
+    data_root: str = '/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/paper_revision/splits/target_adapted_validation/all_center_patient_holdout_70_10_20'
     
-    # ⚠️ VLM缓存路径（必需，从4.0引入）
-    # 使用exp_bio3.2本地的VLM缓存文件
-    vlm_json_path: str = 'data/vlm_profiles_v1.json'  # 相对路径，位于exp_bio3.2/data/下
+    # VLM evidence cache is disabled for the current no-report main experiment.
+    # Kept as an optional legacy/ablation hook only; do not set for main runs.
+    vlm_json_path: Optional[str] = None
     
     # 模型配置
     embed_dim: int = 768
@@ -30,6 +33,7 @@ class BioCOT_v3_2_Config:
     input_dim: int = 768
     llm_embed_dim: int = 768
     hidden_dim: int = 768  # Visual Notes隐藏层维度（3.1的优势）
+    clinical_feature_dim: int = 14  # age + HPV category one-hot + TCT category one-hot
     
     # Text Encoder配置（从4.0引入：Frozen Text Encoder）
     text_model_name: str = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"
@@ -45,7 +49,7 @@ class BioCOT_v3_2_Config:
     use_dual: bool = True
     use_cross_attn: bool = True
     use_adaptive_gating: bool = True  # 3.1的优势：自适应模态门控
-    use_vlm_retriever: bool = False  # 离线训练默认禁用在线Text Encoder加载
+    use_vlm_retriever: bool = False  # current main experiment uses no VLM evidence cache
     use_variational_reliability: bool = True
     use_center_aware_reliability: bool = True
     fusion_strategy: str = "gated"  # gated/equal/concat/late/cross_attention/variational
@@ -57,8 +61,10 @@ class BioCOT_v3_2_Config:
     use_coe_supervision: bool = True
     use_text_derived_asccp: bool = True
     asccp_prototype_path: str = 'paper_revision/method_assets/asccp_prototypes.json'
+    guideline_prototype_path: str = 'paper_revision/configs/guideline_clinical_prototypes.json'
     asccp_text_model_name: Optional[str] = None
     asccp_text_local_files_only: bool = True
+    load_clinical_semantic_adapter_path: Optional[str] = None
     
     # 损失权重（3.1的优势：显式对齐）
     lambda_cls: float = 2.0      # 分类损失权重
@@ -94,7 +100,7 @@ class BioCOT_v3_2_Config:
     # 🔥 5.0优势：动态临床查询演化
     use_clinical_evolver: bool = True
     
-    # 🔥 5.0优势：Text Adapter（VLM集成增强）
+    # Text adapter acts only on internal semantic anchors when VLM retrieval is disabled.
     use_text_adapter: bool = True
     
     # 🔥 5.0优势：正交损失权重
@@ -127,11 +133,17 @@ class BioCOT_v3_2_Config:
     log_dir: str = 'logs'
     
     def __post_init__(self):
-        """后处理：创建输出目录并验证VLM缓存路径"""
+        """Create output directories; VLM evidence cache stays disabled by default."""
         for dir_name in [self.output_dir, self.checkpoint_dir, self.log_dir]:
             Path(dir_name).mkdir(parents=True, exist_ok=True)
         
-        # 验证VLM缓存路径
+        if not self.use_vlm_retriever:
+            self.vlm_json_path = None
+            return
+        if not self.vlm_json_path:
+            raise ValueError("use_vlm_retriever=True requires an explicit legacy vlm_json_path.")
+
+        # Legacy/ablation-only VLM cache path validation; not used in current main experiments.
         vlm_path = Path(self.vlm_json_path)
         if not vlm_path.is_absolute():
             # 尝试相对路径
@@ -145,8 +157,8 @@ class BioCOT_v3_2_Config:
             for p in possible_paths:
                 if p.exists():
                     self.vlm_json_path = str(p.resolve())
-                    print(f"✅ 找到VLM缓存文件: {self.vlm_json_path}")
+                    print(f"✅ 找到 legacy VLM cache file: {self.vlm_json_path}")
                     return
             
-            print(f"⚠️ 警告：VLM缓存文件未找到，请检查路径: {self.vlm_json_path}")
+            print(f"⚠️ 警告：legacy VLM cache file not found: {self.vlm_json_path}")
             print(f"   尝试的路径: {possible_paths}")

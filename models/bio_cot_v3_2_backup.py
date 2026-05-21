@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
+LEGACY BACKUP MODULE - not used in the current HyDRA-CoE no-report main experiment.
+It still contains historical VLM retriever/cache code for archival comparison only.
+
 Bio-COT 3.2 (Enhanced Logic Loop Version)
 融合3.1和4.0的优势：
 1. 保留3.1的所有优点（显式对齐、自适应模态融合、增强Visual Notes）
@@ -417,4 +420,3 @@ def create_bio_cot_v3_2(config):
         warmup_epochs=config.warmup_epochs,
         hidden_dim=getattr(config, 'hidden_dim', 768)
     )
-

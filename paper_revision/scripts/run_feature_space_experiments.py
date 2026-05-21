@@ -39,6 +39,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from config import BioCOT_v3_2_Config
 from data.dataset_v3_2 import FiveCentersMultimodalDatasetV3_2
 from metrics_utils import binary_metrics, read_prediction_files, select_threshold
+from paper_revision.scripts.clinical_variable_mapping import clinical_features_from_row
 from training.extract_vit_patches import extract_patch_features_with_vit
 
 
@@ -48,7 +49,7 @@ CENTER_NAMES = {
     "M20203": "Wuda",
     "M22102": "Xiangyang",
     "M0008": "Jingzhou",
-    "M22101": "Jingzhou",
+    "M22101": "Shiyan",
     "M22104": "Shiyan",
 }
 
@@ -67,33 +68,21 @@ def split_csv(config: BioCOT_v3_2_Config, split: str) -> Path:
 
 
 def clinical_features_from_batch(batch: Dict[str, object], batch_size: int, device: torch.device) -> torch.Tensor:
+    if "clinical_features" in batch and batch["clinical_features"] is not None:
+        return batch["clinical_features"].to(device, non_blocking=True).float()
     clinical_data = batch.get("clinical_data", {})
     if not isinstance(clinical_data, dict):
-        return torch.zeros(batch_size, 7, device=device)
-    hpv = clinical_data.get("hpv", torch.zeros(batch_size, device=device))
-    age = clinical_data.get("age", torch.zeros(batch_size, device=device))
-    tct = clinical_data.get("tct", torch.zeros(batch_size, device=device))
-    hpv = hpv.to(device).float() if isinstance(hpv, torch.Tensor) else torch.as_tensor(hpv, device=device).float()
-    age = age.to(device).float() if isinstance(age, torch.Tensor) else torch.as_tensor(age, device=device).float()
-    if isinstance(tct, torch.Tensor):
-        tct = tct.to(device).long()
-    else:
-        mapping = {
-            "NILM": 0,
-            "ASC-US": 1,
-            "LSIL": 2,
-            "ASC-H": 3,
-            "HSIL": 4,
-            "AGC": 4,
-            "SCC": 4,
-        }
-        values = []
-        for item in list(tct) if isinstance(tct, (list, tuple)) else [tct] * batch_size:
-            text = str(item).strip().upper()
-            values.append(mapping.get(text, 0))
-        tct = torch.as_tensor(values[:batch_size], device=device).long()
-    tct = torch.clamp(tct, 0, 4)
-    return torch.cat([hpv.unsqueeze(1), age.unsqueeze(1) / 100.0, F.one_hot(tct, num_classes=5).float()], dim=1)
+        return torch.zeros(batch_size, 14, device=device)
+    rows = []
+    for index in range(batch_size):
+        rows.append(
+            {
+                "hpv": clinical_data.get("hpv", [None] * batch_size)[index],
+                "age": clinical_data.get("age", [None] * batch_size)[index],
+                "tct": clinical_data.get("tct", [None] * batch_size)[index],
+            }
+        )
+    return torch.tensor([clinical_features_from_row(row) for row in rows], dtype=torch.float32, device=device)
 
 
 def pooled_patch_features(images: torch.Tensor, device: torch.device, vit_batch_size: int) -> torch.Tensor:
@@ -184,7 +173,7 @@ class FeatureFusionNet(nn.Module):
         self.hidden = hidden
         self.oct_proj = nn.Sequential(nn.Linear(768, hidden), nn.LayerNorm(hidden), nn.GELU(), nn.Dropout(0.15))
         self.col_proj = nn.Sequential(nn.Linear(768, hidden), nn.LayerNorm(hidden), nn.GELU(), nn.Dropout(0.15))
-        self.cli_proj = nn.Sequential(nn.Linear(7, hidden), nn.LayerNorm(hidden), nn.GELU(), nn.Dropout(0.1))
+        self.cli_proj = nn.Sequential(nn.Linear(14, hidden), nn.LayerNorm(hidden), nn.GELU(), nn.Dropout(0.1))
         self.concat_proj = nn.Sequential(nn.Linear(hidden * 3, hidden), nn.LayerNorm(hidden), nn.GELU())
         self.gate = nn.Sequential(nn.Linear(hidden * 3, hidden), nn.GELU(), nn.Linear(hidden, 3))
         self.attn = nn.MultiheadAttention(hidden, num_heads=4, batch_first=True)

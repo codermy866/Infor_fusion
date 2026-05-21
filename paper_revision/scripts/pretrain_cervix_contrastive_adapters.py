@@ -31,7 +31,7 @@ from models.bio_cot_v3_2 import ResidualFeatureAdapter
 
 
 DEFAULT_SPLIT_DIR = EXP_ROOT / "paper_revision" / "splits" / "target_adapted_validation" / "all_center_patient_holdout_70_10_20"
-DEFAULT_CACHE = EXP_ROOT / "paper_revision" / "cache" / "patch_features_all_center_patient_holdout.pt"
+DEFAULT_CACHE = EXP_ROOT / "paper_revision" / "cache" / "patch_features_final_1897.pt"
 DEFAULT_OUT = EXP_ROOT / "paper_revision" / "results" / "stage1_contrastive_pretrain"
 
 
@@ -71,7 +71,7 @@ class ClinicalProjector(nn.Module):
     def __init__(self, dim: int = 768, dropout: float = 0.15):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(7, dim),
+            nn.Linear(14, dim),
             nn.LayerNorm(dim),
             nn.GELU(),
             nn.Dropout(dropout),

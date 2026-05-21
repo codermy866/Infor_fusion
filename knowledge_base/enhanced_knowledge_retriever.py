@@ -1,6 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
+LEGACY MODULE - not used in the current HyDRA-CoE no-report main experiment.
+The main experiment disables VLM evidence caches and does not instantiate this
+retriever unless a legacy/ablation config explicitly opts in.
+
 Bio-COT 4.0: VLMAugmentedRetriever
 Frozen VLM + Trainable Adapter 机制
 核心思想：使用冻结的文本编码器提取语义，然后通过可训练的Adapter映射到视觉对齐空间

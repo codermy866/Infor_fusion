@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Full intended HyDRA configuration for reruns after the offline-safe check."""
+"""Full no-report HyDRA-CoE configuration for the current main experiment."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,10 +15,14 @@ from config import BioCOT_v3_2_Config
 @dataclass
 class FullPretrainedHyDRAConfig(BioCOT_v3_2_Config):
     experiment_name: str = "HyDRA_Full_Pretrained"
-    experiment_description: str = "Full HyDRA with pretrained ViT feature extractor and VLM text retriever."
+    experiment_description: str = (
+        "HyDRA-CoE no-report main configuration using colposcopy, OCT, "
+        "and HPV/TCT/Age clinical text variables; no VLM evidence cache."
+    )
 
     vit_pretrained: bool = True
-    use_vlm_retriever: bool = True
+    use_vlm_retriever: bool = False
+    vlm_json_path: str = None
     text_model_name: str = str(ROOT / "paper_revision" / "cache" / "pubmedbert_safetensors")
 
     output_dir: str = "paper_revision/results/full_pretrained/results"

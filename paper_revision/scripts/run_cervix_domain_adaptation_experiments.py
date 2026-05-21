@@ -45,7 +45,7 @@ def safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
 
 
-def write_config(spec: MethodSpec, seed: int) -> Path:
+def write_config(spec: MethodSpec, seed: int, data_root: str | None = None) -> Path:
     safe = safe_name(spec.method)
     out_base = RESULT_ROOT / safe / f"seed{seed}"
     config_path = CONFIG_DIR / f"{safe}_seed{seed}.py"
@@ -66,6 +66,10 @@ class DomainAdaptationConfig({spec.class_name}):
     output_dir: str = "{out_base / "results"}"
     checkpoint_dir: str = "{out_base / "checkpoints"}"
     log_dir: str = "{out_base / "logs"}"
+'''
+    if data_root:
+        content += f'    data_root: str = "{data_root}"\n'
+    content += '''
 
     def __post_init__(self):
         super().__post_init__()
@@ -120,11 +124,12 @@ def run_job(
     run_id: str,
     python_bin: str,
     skip_existing: bool,
+    data_root: str | None,
 ) -> dict[str, object]:
     started = datetime.now().isoformat(timespec="seconds")
     safe = safe_name(spec.method)
     log_path = LOG_DIR / f"{safe}_{run_id}_seed{seed}.log"
-    config_path = write_config(spec, seed)
+    config_path = write_config(spec, seed, data_root=data_root)
     checkpoint_dir = RESULT_ROOT / safe / f"seed{seed}" / "checkpoints"
     env = os.environ.copy()
     env.update(
@@ -224,11 +229,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--methods", default="", help="Optional comma-separated method subset.")
     parser.add_argument("--max-workers", type=int, default=0, help="Default: number of provided GPUs.")
+    parser.add_argument("--data-root", default="", help="Optional split directory containing train/val/external CSVs.")
+    parser.add_argument("--result-root", default="", help="Optional result directory override.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    global RESULT_ROOT, PRED_DIR, CONFIG_DIR, LOG_DIR, STATUS_PATH
+    if args.result_root:
+        RESULT_ROOT = Path(args.result_root)
+        if not RESULT_ROOT.is_absolute():
+            RESULT_ROOT = EXP_ROOT / RESULT_ROOT
+        PRED_DIR = RESULT_ROOT / "predictions"
+        CONFIG_DIR = RESULT_ROOT / "generated_configs"
+        LOG_DIR = RESULT_ROOT / "run_logs"
+        STATUS_PATH = RESULT_ROOT / "domain_adaptation_status.jsonl"
+    data_root = str(Path(args.data_root).resolve()) if args.data_root else None
     seeds = [int(item.strip()) for item in args.seeds.split(",") if item.strip()]
     gpus = [int(item.strip()) for item in args.gpus.split(",") if item.strip()]
     if not gpus:
@@ -254,7 +271,17 @@ def main() -> int:
     failures = 0
     with futures.ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_job = {
-            executor.submit(run_job, spec, seed, gpu, args.epochs, args.run_id, args.python, args.skip_existing): (spec, seed, gpu)
+            executor.submit(
+                run_job,
+                spec,
+                seed,
+                gpu,
+                args.epochs,
+                args.run_id,
+                args.python,
+                args.skip_existing,
+                data_root,
+            ): (spec, seed, gpu)
             for spec, seed, gpu in jobs
         }
         for future in futures.as_completed(future_to_job):
