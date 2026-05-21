@@ -22,6 +22,7 @@ __pycache__/
 *.xlsx
 *.xls
 !paper_revision/EXPERIMENT_SCOPE.md
+!HyDRA_CoE_Corrected403_Clean_Rerun_Prompts.md
 _legacy_notes/
 data/vlm_profiles_v1.json
 paper_revision/cache/

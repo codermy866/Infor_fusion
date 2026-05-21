@@ -13,23 +13,28 @@ from pathlib import Path
 from paper_revision.configs.all_center_elbo_structured_prior_config import (
     AllCenterELBOStructuredPriorConfig,
 )
+from paper_revision.configs.corrected403_base_config import CORRECTED_ROOT, STAGE1_ADAPTER
 
 
 @dataclass
 class CorrectedFiveCenterELBOStructuredPriorConfig(AllCenterELBOStructuredPriorConfig):
-    experiment_name: str = "HyDRA-CoE_Corrected5Center_ELBO_StructuredPrior"
+    experiment_name: str = "HyDRA-CoE Full"
     experiment_description: str = (
         "Corrected five-hospital no-report retraining using canonical centre mapping: "
         "C01_WUHAN_RENMIN, C02_ENSHI, C03_XIANGYANG, C04_SHIYAN, C05_JINGZHOU."
     )
 
     num_centers: int = 5
-    # Evaluation and training use cached patch features in this corrected run,
-    # so initializing the unused ViT path should not contact external services.
+    expected_external_n: int = 403
     vit_pretrained: bool = False
-    output_dir: str = "paper_revision/results/corrected_5center_retrain/elbo_structured_prior/results"
-    checkpoint_dir: str = "paper_revision/results/corrected_5center_retrain/elbo_structured_prior/checkpoints"
-    log_dir: str = "paper_revision/results/corrected_5center_retrain/elbo_structured_prior/logs"
+    load_clinical_semantic_adapter_path: str = str(STAGE1_ADAPTER)
+    freeze_clinical_semantic_adapter_at_start: bool = True
+    unfreeze_clinical_semantic_adapter_epoch: int = 5
+    adapter_lr_multiplier: float = 0.1
+    output_dir: str = str(CORRECTED_ROOT / "full_hydra_coe" / "results")
+    checkpoint_dir: str = str(CORRECTED_ROOT / "full_hydra_coe" / "checkpoints")
+    log_dir: str = str(CORRECTED_ROOT / "full_hydra_coe" / "logs")
+    prediction_output_dir: str = str(CORRECTED_ROOT / "full_hydra_coe" / "predictions")
 
     def __post_init__(self):
         super().__post_init__()
@@ -37,5 +42,10 @@ class CorrectedFiveCenterELBOStructuredPriorConfig(AllCenterELBOStructuredPriorC
         self.no_report_mode = True
         self.use_vlm_retriever = False
         self.vlm_json_path = None
-        for dir_name in [self.output_dir, self.checkpoint_dir, self.log_dir]:
+        for dir_name in [
+            self.output_dir,
+            self.checkpoint_dir,
+            self.log_dir,
+            self.prediction_output_dir,
+        ]:
             Path(dir_name).mkdir(parents=True, exist_ok=True)

@@ -1116,18 +1116,30 @@ def main():
         config_classes = [
             cls for cls in config_module.__dict__.values()
             if isinstance(cls, type)
-            and 'Config' in cls.__name__
-            and getattr(cls, "__module__", None) == getattr(config_module, "__name__", None)
+            and "Config" in cls.__name__
+            and cls.__name__ != "BioCOT_v3_2_Config"
+            and (
+                getattr(cls, "__module__", None) == getattr(config_module, "__name__", None)
+                or cls.__name__.startswith(("Corrected", "Abl", "AllCenter"))
+            )
         ]
         if not config_classes:
             raise ValueError(f"在 {args.config} 中未找到配置类（请确保文件内定义了 *Config 类）")
 
-        # 若存在多个，优先选择"非BioCOT_v3_2_Config"的那个（一般是 BaselineConfig/NoXXXConfig）
+        # Prefer corrected/ablation configs over generic imported bases.
         config_class = None
-        for cls in config_classes:
-            if cls.__name__ != "BioCOT_v3_2_Config":
-                config_class = cls
+        for prefix in ("Corrected", "Abl"):
+            for cls in config_classes:
+                if cls.__name__.startswith(prefix):
+                    config_class = cls
+                    break
+            if config_class is not None:
                 break
+        if config_class is None:
+            for cls in config_classes:
+                if cls.__name__.startswith("AllCenter"):
+                    config_class = cls
+                    break
         if config_class is None:
             config_class = config_classes[0]
 
@@ -1333,6 +1345,30 @@ def main():
         log_print(f"   ⚠️ 检测到learnable_knowledge_base缺失，已手动创建")
     
     model = model.to(device)
+
+    adapter_module_names = (
+        "note_projector",
+        "text_adapter",
+        "clinical_feature_projector",
+        "align_proj_img",
+        "align_proj_text",
+        "shared_align_proj",
+    )
+
+    def _set_adapter_trainable(trainable: bool) -> None:
+        for name in adapter_module_names:
+            module = getattr(model, name, None)
+            if module is None:
+                continue
+            for param in module.parameters():
+                param.requires_grad = trainable
+
+    if getattr(config, "freeze_clinical_semantic_adapter_at_start", False):
+        _set_adapter_trainable(False)
+        log_print(
+            "  ✅ Stage-1 adapter modules frozen at start "
+            f"(unfreeze at epoch {getattr(config, 'unfreeze_clinical_semantic_adapter_epoch', 5)})"
+        )
     
     # 🔥 调试：检查模型属性
     log_print(f"   模型 use_vlm_retriever: {getattr(model, 'use_vlm_retriever', 'N/A')} (main experiment should be False)")
@@ -1371,6 +1407,20 @@ def main():
     }
     
     for epoch in range(1, config.num_epochs + 1):
+        unfreeze_epoch = int(getattr(config, "unfreeze_clinical_semantic_adapter_epoch", 0) or 0)
+        if (
+            getattr(config, "freeze_clinical_semantic_adapter_at_start", False)
+            and unfreeze_epoch > 0
+            and epoch == unfreeze_epoch
+        ):
+            _set_adapter_trainable(True)
+            adapter_lr_mult = float(getattr(config, "adapter_lr_multiplier", 0.1))
+            for group in optimizer.param_groups:
+                group["lr"] = config.learning_rate * adapter_lr_mult
+            log_print(
+                f"  ✅ Unfroze Stage-1 adapter modules at epoch {epoch}; "
+                f"adapter_lr_multiplier={adapter_lr_mult}"
+            )
         try:
             # 训练
             train_results = train_epoch(model, train_loader, criterion, optimizer, device, epoch, config, log_print=log_print)

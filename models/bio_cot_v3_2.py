@@ -1510,15 +1510,32 @@ def create_bio_cot_v3_2(config):
                 'align_proj_text',
                 'shared_align_proj',
             ]
+            forbidden_prefixes = (
+                'classifier',
+                'variational_reliability',
+                'posterior_refiner',
+                'asccp_prior',
+                'coe_readout',
+                'center_discriminator',
+            )
             loaded_modules = []
+            skipped_non_adapter_keys = []
+            if isinstance(payload, dict):
+                for key in payload.keys():
+                    if any(key.startswith(prefix) for prefix in forbidden_prefixes):
+                        skipped_non_adapter_keys.append(key)
             for module_name in adapter_modules:
                 state = payload.get(module_name) if isinstance(payload, dict) else None
                 module = getattr(model, module_name, None)
                 if state is not None and module is not None:
                     missing, unexpected = module.load_state_dict(state, strict=False)
                     loaded_modules.append(f"{module_name}(missing={len(missing)}, unexpected={len(unexpected)})")
-            print(f"✅ Loaded clinical semantic adapter modules from {ckpt_path}: {', '.join(loaded_modules) or 'none'}")
+            print(f"loaded_stage1_adapter: true")
+            print(f"loaded_adapter_keys: {loaded_modules or 'none'}")
+            print(f"skipped_non_adapter_keys: {skipped_non_adapter_keys or 'none'}")
+            print(f"✅ Loaded clinical semantic adapter modules from {ckpt_path}")
         else:
+            print(f"loaded_stage1_adapter: false")
             print(f"⚠️ Clinical semantic adapter checkpoint not found: {ckpt_path}")
     domain_pretrain_path = getattr(config, 'load_domain_pretrain_path', None)
     if domain_pretrain_path:
