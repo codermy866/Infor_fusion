@@ -79,10 +79,49 @@ def latest_checkpoint(ckpt_dir: Path) -> Optional[Path]:
     return files[0] if files else None
 
 
+def checkpoint_after_train(ckpt_dir: Path, train_start_epoch: float) -> Optional[Path]:
+    """Pick checkpoint written during the current train run (not a later seed's best)."""
+    margin = 5.0
+    files = [
+        p
+        for p in ckpt_dir.glob("best_model_v3_*.pth")
+        if p.stat().st_mtime >= train_start_epoch - margin
+    ]
+    if files:
+        return max(files, key=lambda p: p.stat().st_mtime)
+    return latest_checkpoint(ckpt_dir)
+
+
+def checkpoint_for_seed_from_manifest(
+    manifest_path: Path, method: str, seed: int, ckpt_dir: Path
+) -> Optional[Path]:
+    """First manifest row per (method, seed) keeps the checkpoint from that training run."""
+    if not manifest_path.exists():
+        return latest_checkpoint(ckpt_dir)
+    first: Optional[Path] = None
+    with manifest_path.open(newline="", encoding="utf-8-sig") as f:
+        for row in csv.DictReader(f):
+            if row.get("method") != method or int(row.get("seed", -1)) != seed:
+                continue
+            ckpt = row.get("checkpoint_path", "").strip()
+            if ckpt and Path(ckpt).exists():
+                first = Path(ckpt)
+                break
+    return first or latest_checkpoint(ckpt_dir)
+
+
+def prediction_csv(pred_dir: Path, method: str, run_id: str, seed: int, split: str) -> Path:
+    """Match evaluate_checkpoint_predictions.py naming (method may contain spaces)."""
+    return pred_dir / f"{method}_run{run_id}_seed{seed}_{split}_full.csv"
+
+
 def external_n(pred_csv: Path) -> int:
     if not pred_csv.exists():
         return -1
-    df = pd.read_csv(pred_csv)
+    try:
+        df = pd.read_csv(pred_csv)
+    except Exception:
+        return -1
     ext = df[df["split"].astype(str).isin(["external_test", "external"])]
     return len(ext)
 
@@ -113,7 +152,8 @@ def train_and_eval(
     cfg_cls = load_config_class(config_path)
     cfg = cfg_cls()
     ckpt_dir = Path(cfg.checkpoint_dir)
-    ext_pred = pred_dir / f"{method.replace(' ', '_')}_run{run_id}_seed{seed}_external_test_full.csv"
+    ext_pred = prediction_csv(pred_dir, method, run_id, seed, "external_test")
+    int_pred = prediction_csv(pred_dir, method, run_id, seed, "internal_validation")
     if skip_if_success and ext_pred.exists() and external_n(ext_pred) == 403:
         append_manifest(
             manifest_path,
@@ -123,7 +163,7 @@ def train_and_eval(
                 "seed": seed,
                 "config_path": str(config_path),
                 "checkpoint_path": str(latest_checkpoint(ckpt_dir) or ""),
-                "internal_prediction_csv": "",
+                "internal_prediction_csv": str(int_pred if int_pred.exists() else ""),
                 "external_prediction_csv": str(ext_pred),
                 "external_n": 403,
                 "status": "skipped_existing",
@@ -137,6 +177,7 @@ def train_and_eval(
 
     log_path = Path(cfg.log_dir) / f"train_seed{seed}_{now().replace(':', '')}.log"
     t0 = now()
+    train_start_epoch = datetime.now().timestamp()
     code = run_cmd(
         [
             PYTHON_BIN,
@@ -153,17 +194,17 @@ def train_and_eval(
         log_path,
         env={"CUDA_VISIBLE_DEVICES": str(gpu)},
     )
-    ckpt = latest_checkpoint(ckpt_dir)
+    ckpt = checkpoint_after_train(ckpt_dir, train_start_epoch)
     status = "success" if code == 0 and ckpt else "failed"
     err = "" if status == "success" else f"train_exit={code}"
 
-    int_pred = pred_dir / f"{method.replace(' ', '_')}_run{run_id}_seed{seed}_internal_validation_full.csv"
     if status == "success" and ckpt:
         for split, out_path in [
             ("internal_validation", int_pred),
             ("external_test", ext_pred),
         ]:
-            eval_log = pred_dir / f"eval_{method.replace(' ', '_')}_seed{seed}_{split}.log"
+            safe_method = method.replace(" ", "_")
+            eval_log = pred_dir / f"eval_{safe_method}_seed{seed}_{split}.log"
             ec = run_cmd(
                 [
                     PYTHON_BIN,
@@ -263,6 +304,24 @@ def generate_ablation_configs() -> list[Path]:
     return paths
 
 
+def baseline_config_stub(class_name: str) -> str:
+    """Config subclass in generated file so evaluate_checkpoint_predictions finds *Config in-module."""
+    return (
+        "#!/usr/bin/env python\n"
+        "# -*- coding: utf-8 -*-\n"
+        '"""Auto-generated corrected403 baseline config."""\n'
+        "import sys\n"
+        "from pathlib import Path\n\n"
+        "ROOT = Path(__file__).resolve().parents[2]\n"
+        "if str(ROOT) not in sys.path:\n"
+        "    sys.path.insert(0, str(ROOT))\n\n"
+        f"from paper_revision.configs.corrected403_experiment_configs import {class_name} as _Base\n\n\n"
+        f"class {class_name}(_Base):\n"
+        '    """Thin subclass: *Config must live in this module for eval loader."""\n'
+        "    pass\n"
+    )
+
+
 def write_baseline_config_files() -> dict[str, Path]:
     from paper_revision.configs import corrected403_experiment_configs as spec
 
@@ -280,24 +339,24 @@ def write_baseline_config_files() -> dict[str, Path]:
     paths: dict[str, Path] = {}
     for name, cls in mapping.items():
         path = gen_dir / f"baseline_{name}.py"
-        path.write_text(
-            (
-                "#!/usr/bin/env python\n# -*- coding: utf-8-\n"
-                "import sys\nfrom pathlib import Path\n"
-                "ROOT = Path(__file__).resolve().parents[2]\n"
-                "sys.path.insert(0, str(ROOT))\n"
-                f"from paper_revision.configs.corrected403_experiment_configs import {cls.__name__}\n"
-            ),
-            encoding="utf-8",
-        )
+        path.write_text(baseline_config_stub(cls.__name__), encoding="utf-8")
         paths[name] = path
     return paths
+
+
+def reset_manifest_if_resuming(manifest_path: Path) -> None:
+    if manifest_path.exists():
+        backup = manifest_path.with_suffix(".csv.bak")
+        shutil.copy2(manifest_path, backup)
 
 
 def stage_r3_r5(args) -> None:
     full_cfg = ROOT / "paper_revision" / "configs" / "corrected_5center_elbo_structured_prior_config.py"
     full_pred = CORRECTED_ROOT / "full_hydra_coe" / "predictions"
     full_manifest = CORRECTED_ROOT / "full_hydra_coe" / "full_model_run_manifest.csv"
+    reset_manifest_if_resuming(full_manifest)
+    if full_manifest.exists():
+        full_manifest.unlink()
 
     for seed in args.seeds:
         train_and_eval(
