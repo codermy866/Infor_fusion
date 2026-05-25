@@ -3,6 +3,7 @@ __pycache__/
 *.log
 *.tmp
 .DS_Store
+.routeb_python_pkgs/
 
 # Do not push model/data artifacts.
 *.pth
@@ -40,6 +41,7 @@ paper_revision/scripts/build_*package.py
 paper_revision/scripts/import_frozen_exp_bio32.py
 
 # Fresh experiment outputs.
+outputs/
 logs/*
 results/*
 checkpoints/*
