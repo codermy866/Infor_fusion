@@ -97,9 +97,14 @@ def validate_evaluation_scope(config: BioCOT_v3_2_Config) -> None:
         df = pd.read_csv(path, encoding="utf-8-sig")
         assert_no_report_columns(df.columns)
         if {"col_count", "oct_count"}.issubset(df.columns):
-            missing = df[(df["col_count"].astype(float) <= 0) | (df["oct_count"].astype(float) <= 0)]
-            if len(missing):
-                raise ValueError(f"{path} contains {len(missing)} rows without both colposcopy and OCT images.")
+            if getattr(config, "pretrain_without_colpo", False):
+                missing = df[df["oct_count"].astype(float) <= 0]
+                if len(missing):
+                    raise ValueError(f"{path} contains {len(missing)} rows without OCT images.")
+            else:
+                missing = df[(df["col_count"].astype(float) <= 0) | (df["oct_count"].astype(float) <= 0)]
+                if len(missing):
+                    raise ValueError(f"{path} contains {len(missing)} rows without both colposcopy and OCT images.")
         dfs.append(df)
     expected_n = getattr(config, "expected_aligned_n", None)
     if expected_n is not None and "all_center_patient_holdout_70_10_20" in str(root):
@@ -353,18 +358,18 @@ def scale_shift_features(features: torch.Tensor, scale: float, shift_strength: f
 
 def apply_input_corruption(
     oct_feats: torch.Tensor,
-    col_feats: torch.Tensor,
+    col_feats: torch.Tensor | None,
     corruption: str,
     severity: float,
     seed: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor | None]:
     """Apply deterministic feature-space analogues of image corruption tests.
 
     Formal runs use cached patient-level ViT patch features for speed and
     auditability. These transformations mimic the expected downstream effects
     of modality-specific image corruptions on the extracted patch-token space.
     """
-    if corruption == "none":
+    if corruption == "none" or col_feats is None:
         return oct_feats, col_feats
     severity = max(0.1, float(severity))
     generator = torch_generator(oct_feats.device, seed)
@@ -501,9 +506,12 @@ def main() -> None:
             clinical_info = normalize_string_list(batch.get("clinical_info", ""))
             batch_size = labels.shape[0]
 
+            pretrain_without_colpo = bool(getattr(config, "pretrain_without_colpo", False))
+            pass_raw_colpo_to_model = bool(getattr(config, "pass_raw_colpo_to_model", False))
+
             if "oct_patch_features" in batch and "colpo_patch_features" in batch:
                 oct_feats = batch["oct_patch_features"].to(device, non_blocking=True).float()
-                col_feats = batch["colpo_patch_features"].to(device, non_blocking=True).float()
+                col_feats = None if pretrain_without_colpo else batch["colpo_patch_features"].to(device, non_blocking=True).float()
             else:
                 oct_images = batch["oct_images"].to(device, non_blocking=True)
                 colposcopy_images = batch["colposcopy_images"].to(device, non_blocking=True)
@@ -513,12 +521,17 @@ def main() -> None:
                     config.vit_batch_size,
                     pretrained=getattr(config, "vit_pretrained", False),
                 )
-                col_feats = patch_features(
-                    colposcopy_images,
-                    device,
-                    config.vit_batch_size,
-                    pretrained=getattr(config, "vit_pretrained", False),
-                )
+                if pretrain_without_colpo:
+                    col_feats = None
+                elif pass_raw_colpo_to_model:
+                    col_feats = colposcopy_images.float()
+                else:
+                    col_feats = patch_features(
+                        colposcopy_images,
+                        device,
+                        config.vit_batch_size,
+                        pretrained=getattr(config, "vit_pretrained", False),
+                    )
             clinical_features = clinical_features_from_batch(
                 batch,
                 batch_size,
@@ -540,10 +553,11 @@ def main() -> None:
                     if "oct" in item:
                         oct_feats[i].zero_()
             if any("colposcopy" in item for item in missing):
-                col_feats = col_feats.clone()
-                for i, item in enumerate(missing):
-                    if "colposcopy" in item:
-                        col_feats[i].zero_()
+                if col_feats is not None:
+                    col_feats = col_feats.clone()
+                    for i, item in enumerate(missing):
+                        if "colposcopy" in item:
+                            col_feats[i].zero_()
             if any("clinical" in item for item in missing):
                 clinical_info = ["" if "clinical" in item else clinical_info[i] for i, item in enumerate(missing)]
                 if clinical_features is not None:

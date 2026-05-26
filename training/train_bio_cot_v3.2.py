@@ -408,9 +408,14 @@ def validate_no_report_cohort_scope(config, train_csv: Path, val_csv: Path, logg
             raise FileNotFoundError(f"Split CSV not found: {path}")
         df = _read_csv_for_assertions(path)
         if {"col_count", "oct_count"}.issubset(df.columns):
-            missing = df[(df["col_count"].astype(float) <= 0) | (df["oct_count"].astype(float) <= 0)]
-            if len(missing):
-                raise ValueError(f"{path} contains {len(missing)} rows without both colposcopy and OCT images.")
+            if getattr(config, "pretrain_without_colpo", False):
+                missing = df[df["oct_count"].astype(float) <= 0]
+                if len(missing):
+                    raise ValueError(f"{path} contains {len(missing)} rows without OCT images.")
+            else:
+                missing = df[(df["col_count"].astype(float) <= 0) | (df["oct_count"].astype(float) <= 0)]
+                if len(missing):
+                    raise ValueError(f"{path} contains {len(missing)} rows without both colposcopy and OCT images.")
         if clinical_dim is not None and int(clinical_dim) != 14:
             raise ValueError(f"Current HPV/TCT/Age clinical feature mapping expects clinical_feature_dim=14, got {clinical_dim}.")
         dfs.append(df)

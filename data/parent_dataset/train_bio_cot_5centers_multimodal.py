@@ -303,9 +303,9 @@ class FiveCentersMultimodalDataset(Dataset):
         tct_str = normalize_tct(row.get("tct"))
         
         clinical_data = {
-            'hpv': hpv,
-            'tct': tct_str,
-            'age': age
+            'hpv': str(hpv),
+            'tct': str(tct_str),
+            'age': str(age)
         }
         
         label = int(row['label'])

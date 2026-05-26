@@ -1799,6 +1799,19 @@ def create_bio_cot_v3_2(config):
     )
     # Set legacy retriever flag. Main no-report configs keep this False.
     model.use_vlm_retriever = use_vlm_retriever
+    expert_base_path = getattr(config, 'load_expert_base_checkpoint_path', None)
+    if expert_base_path:
+        ckpt_path = Path(expert_base_path)
+        if ckpt_path.exists():
+            payload = torch.load(ckpt_path, map_location='cpu')
+            state = payload.get('model_state_dict', payload) if isinstance(payload, dict) else payload
+            missing, unexpected = model.load_state_dict(state, strict=False)
+            print(
+                f"✅ Loaded expert base checkpoint from {ckpt_path} "
+                f"(missing={len(missing)}, unexpected={len(unexpected)})"
+            )
+        else:
+            print(f"⚠️ Expert base checkpoint not found: {ckpt_path}")
     if getattr(config, 'freeze_expert_base_for_lora', False):
         model.freeze_expert_base(freeze_colpo_encoder=getattr(config, 'freeze_colpo_encoder_for_lora', None))
     if getattr(config, 'freeze_visual_encoder', False) and getattr(model, 'visual_encoder', None) is not None:

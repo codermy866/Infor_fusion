@@ -78,6 +78,7 @@ class BioCOT_v3_2_Config:
     train_colpo_encoder: bool = False
     freeze_expert_base_for_lora: bool = False
     freeze_colpo_encoder_for_lora: Optional[bool] = None
+    load_expert_base_checkpoint_path: Optional[str] = None
     use_colpo_lora_bridge: bool = False
     shared_lora_rank: int = 8
     shared_lora_alpha: float = 16.0
