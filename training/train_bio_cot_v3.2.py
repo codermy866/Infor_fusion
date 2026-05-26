@@ -285,11 +285,11 @@ def corrupt_images(images: torch.Tensor, config, modality: str) -> torch.Tensor:
 
 def apply_modality_dropout(
     oct_features: torch.Tensor,
-    colpo_features: torch.Tensor,
+    colpo_features: torch.Tensor | None,
     clinical_features: torch.Tensor | None,
     clinical_info,
     config,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, object]:
+) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, object]:
     """Drop modalities during training to reduce reliance on center-specific cues."""
     p_one = float(getattr(config, "train_modality_dropout_prob", 0.0))
     p_two = float(getattr(config, "train_two_modality_dropout_prob", 0.0))
@@ -311,7 +311,7 @@ def apply_modality_dropout(
     if drop_mask[:, 0].any():
         oct_features = oct_features.clone()
         oct_features[drop_mask[:, 0]] = 0.0
-    if drop_mask[:, 1].any():
+    if colpo_features is not None and drop_mask[:, 1].any():
         colpo_features = colpo_features.clone()
         colpo_features[drop_mask[:, 1]] = 0.0
     if drop_mask[:, 2].any():
@@ -440,19 +440,30 @@ def validate_no_report_cohort_scope(config, train_csv: Path, val_csv: Path, logg
 
 def get_patch_features_from_batch(batch, device, config, training: bool):
     """Return patient-level OCT/colposcopy patch features from cache or images."""
-    if "oct_patch_features" in batch and "colpo_patch_features" in batch:
+    pretrain_without_colpo = bool(getattr(config, "pretrain_without_colpo", False))
+    pass_raw_colpo_to_model = bool(getattr(config, "pass_raw_colpo_to_model", False))
+    if "oct_patch_features" in batch:
         oct_features_patch = batch["oct_patch_features"].to(device, non_blocking=True).float()
-        colpo_features_patch = batch["colpo_patch_features"].to(device, non_blocking=True).float()
+        if pretrain_without_colpo:
+            colpo_features_patch = None
+        elif "colpo_patch_features" in batch:
+            colpo_features_patch = batch["colpo_patch_features"].to(device, non_blocking=True).float()
+        else:
+            colpo_features_patch = None
         if training:
             oct_features_patch = maybe_perturb_cached_features(oct_features_patch, config)
-            colpo_features_patch = maybe_perturb_cached_features(colpo_features_patch, config)
+            if colpo_features_patch is not None:
+                colpo_features_patch = maybe_perturb_cached_features(colpo_features_patch, config)
         return oct_features_patch, colpo_features_patch
 
     oct_images = batch['oct_images'].to(device, non_blocking=True)
-    colposcopy_images = batch['colposcopy_images'].to(device, non_blocking=True)
+    colposcopy_images = None
+    if not pretrain_without_colpo and 'colposcopy_images' in batch:
+        colposcopy_images = batch['colposcopy_images'].to(device, non_blocking=True)
     if training:
         oct_images = corrupt_images(oct_images, config, "oct")
-        colposcopy_images = corrupt_images(colposcopy_images, config, "colposcopy")
+        if colposcopy_images is not None:
+            colposcopy_images = corrupt_images(colposcopy_images, config, "colposcopy")
 
     B_oct = oct_images.shape[0]
     if len(oct_images.shape) == 5:
@@ -472,6 +483,12 @@ def get_patch_features_from_batch(batch, device, config, training: bool):
             batch_size=config.vit_batch_size,
             pretrained=getattr(config, 'vit_pretrained', False),
         )
+
+    if pretrain_without_colpo or colposcopy_images is None:
+        return oct_features_patch, None
+
+    if pass_raw_colpo_to_model:
+        return oct_features_patch, colposcopy_images.float()
 
     B_colpo = colposcopy_images.shape[0]
     if len(colposcopy_images.shape) == 5:
@@ -524,6 +541,8 @@ def train_epoch(
     ot_losses = []
     align_losses = []  # 🔥 [NEW] 对齐损失
     align_recalls = []  # 🔥 [NEW] 对齐召回率 Recall@1（越高越好）
+    colpo_bridge_ot_losses = []
+    colpo_bridge_align_losses = []
     sparse_losses = []
     consist_losses = []
     adv_losses = []
@@ -611,6 +630,16 @@ def train_epoch(
             L_ot = outputs['loss_components']['L_ot']
             total_loss_batch = total_loss_batch + config.lambda_ot * L_ot
             ot_losses.append(L_ot.item())
+
+        if 'L_colpo_bridge_ot' in outputs.get('loss_components', {}):
+            L_colpo_bridge_ot = outputs['loss_components']['L_colpo_bridge_ot']
+            total_loss_batch = total_loss_batch + getattr(config, 'lambda_colpo_bridge_ot', 0.2) * L_colpo_bridge_ot
+            colpo_bridge_ot_losses.append(L_colpo_bridge_ot.item())
+
+        if 'L_colpo_bridge_align' in outputs.get('loss_components', {}):
+            L_colpo_bridge_align = outputs['loss_components']['L_colpo_bridge_align']
+            total_loss_batch = total_loss_batch + getattr(config, 'lambda_colpo_bridge_align', 0.05) * L_colpo_bridge_align
+            colpo_bridge_align_losses.append(L_colpo_bridge_align.item())
         
         # 🔥 [NEW] 添加对齐损失 (Alignment Loss - 逻辑闭环关键)
         if 'L_align' in outputs.get('loss_components', {}):
@@ -787,6 +816,10 @@ def train_epoch(
     if align_losses and any(v > 0 for v in align_losses):
         log_print(f"     - 🔥 对齐损失 (Alignment): {np.mean(align_losses):.6f}")
         log_print(f"     - ✅ 对齐召回率 (Recall@1): {np.mean(align_recalls):.4f}")
+    if colpo_bridge_ot_losses:
+        log_print(f"     - Shared LoRA colpo OT损失: {np.mean(colpo_bridge_ot_losses):.6f}")
+    if colpo_bridge_align_losses:
+        log_print(f"     - Shared LoRA colpo align损失: {np.mean(colpo_bridge_align_losses):.6f}")
     if config.use_visual_notes:
         log_print(f"     - 稀疏性损失: {np.mean(sparse_losses):.6f}")
     if config.use_dual:
@@ -809,6 +842,8 @@ def train_epoch(
         'ot_loss': np.mean(ot_losses) if ot_losses else 0.0,
         'align_loss': np.mean(align_losses) if align_losses else 0.0,
         'align_recall': float(np.mean(align_recalls)) if align_recalls else 0.0,
+        'colpo_bridge_ot_loss': np.mean(colpo_bridge_ot_losses) if colpo_bridge_ot_losses else 0.0,
+        'colpo_bridge_align_loss': np.mean(colpo_bridge_align_losses) if colpo_bridge_align_losses else 0.0,
         'sparse_loss': np.mean(sparse_losses) if sparse_losses else 0.0,
         'consist_loss': np.mean(consist_losses) if consist_losses else 0.0,
         'adv_loss': np.mean(adv_losses) if adv_losses else 0.0,
@@ -1369,6 +1404,18 @@ def main():
             "  ✅ Stage-1 adapter modules frozen at start "
             f"(unfreeze at epoch {getattr(config, 'unfreeze_clinical_semantic_adapter_epoch', 5)})"
         )
+    if getattr(config, "freeze_expert_base_for_lora", False) and hasattr(model, "trainable_parameter_summary"):
+        summary = model.trainable_parameter_summary()
+        log_print("  ✅ Expert base frozen for Shared-LoRA adaptation")
+        log_print(
+            "  Trainable parameter ratio: "
+            f"{summary['trainable_parameters']:,}/{summary['total_parameters']:,} "
+            f"({summary['trainable_ratio']:.4%})"
+        )
+        for row in summary["trainable_tensors"][:30]:
+            log_print(f"    - {row['name']}: {row['num_parameters']:,}")
+        if len(summary["trainable_tensors"]) > 30:
+            log_print(f"    ... {len(summary['trainable_tensors']) - 30} more trainable tensors")
     
     # 🔥 调试：检查模型属性
     log_print(f"   模型 use_vlm_retriever: {getattr(model, 'use_vlm_retriever', 'N/A')} (main experiment should be False)")
@@ -1384,7 +1431,10 @@ def main():
     log_print(f"   可训练参数量: {trainable_params:,}")
     
     # 优化器和损失函数
-    optimizer = optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    trainable_parameters = [p for p in model.parameters() if p.requires_grad]
+    if not trainable_parameters:
+        raise RuntimeError("No trainable parameters found; check freeze_expert_base_for_lora / LoRA config.")
+    optimizer = optim.AdamW(trainable_parameters, lr=config.learning_rate, weight_decay=config.weight_decay)
     criterion = FocalLoss(alpha=0.25, gamma=2.0)
     
     # 训练循环
@@ -1403,7 +1453,9 @@ def main():
         'val_precision': [], 'val_recall': [], 'val_precision_pos': [], 'val_recall_pos': [],
         'val_sensitivity': [], 'val_specificity': [], 'val_npv': [], 'val_mcc': [],
         # 损失指标
-        'cls_loss': [], 'ot_loss': [], 'align_loss': [], 'align_recall': [], 'sparse_loss': [], 'consist_loss': [], 'adv_loss': []
+        'cls_loss': [], 'ot_loss': [], 'align_loss': [], 'align_recall': [],
+        'colpo_bridge_ot_loss': [], 'colpo_bridge_align_loss': [],
+        'sparse_loss': [], 'consist_loss': [], 'adv_loss': []
     }
     
     for epoch in range(1, config.num_epochs + 1):
@@ -1467,6 +1519,8 @@ def main():
         history['ot_loss'].append(train_results['ot_loss'])
         history['align_loss'].append(train_results.get('align_loss', 0.0))
         history['align_recall'].append(train_results.get('align_recall', 0.0))
+        history['colpo_bridge_ot_loss'].append(train_results.get('colpo_bridge_ot_loss', 0.0))
+        history['colpo_bridge_align_loss'].append(train_results.get('colpo_bridge_align_loss', 0.0))
         history['sparse_loss'].append(train_results['sparse_loss'])
         history['consist_loss'].append(train_results['consist_loss'])
         history['adv_loss'].append(train_results['adv_loss'])

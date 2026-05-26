@@ -66,6 +66,26 @@ class BioCOT_v3_2_Config:
     asccp_text_local_files_only: bool = True
     load_clinical_semantic_adapter_path: Optional[str] = None
     
+    # Shared-LoRA auxiliary colposcopy adaptation.
+    # Pretraining on Huaxi/Xiangya can set pretrain_without_colpo=True and keep
+    # these disabled. Downstream LOCO adaptation enables the independent colpo
+    # encoder and freezes the OCT+Text expert base.
+    pretrain_without_colpo: bool = False
+    pass_raw_colpo_to_model: bool = False
+    enable_colpo_encoder: bool = False
+    colpo_encoder_name: str = "vit_base_patch16_224"
+    colpo_encoder_pretrained: bool = True
+    train_colpo_encoder: bool = False
+    freeze_expert_base_for_lora: bool = False
+    freeze_colpo_encoder_for_lora: Optional[bool] = None
+    use_colpo_lora_bridge: bool = False
+    shared_lora_rank: int = 8
+    shared_lora_alpha: float = 16.0
+    shared_lora_dropout: float = 0.1
+    colpo_bridge_ot_weight: float = 1.0
+    lambda_colpo_bridge_ot: float = 0.2
+    lambda_colpo_bridge_align: float = 0.05
+
     # 损失权重（3.1的优势：显式对齐）
     lambda_cls: float = 2.0      # 分类损失权重
     lambda_ot: float = 0.5       # Optimal Transport损失权重

@@ -138,6 +138,7 @@ class VariationalReliabilityInference(nn.Module):
         features: Dict[str, torch.Tensor],
         center_labels: Optional[torch.Tensor] = None,
         sample: bool = True,
+        modality_mask: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, object]:
         mus: Dict[str, torch.Tensor] = {}
         logvars: Dict[str, torch.Tensor] = {}
@@ -164,6 +165,9 @@ class VariationalReliabilityInference(nn.Module):
             else:
                 z = mu
             precision = torch.exp(-logvar).mean(dim=-1, keepdim=True)
+            if modality_mask is not None and name in modality_mask:
+                mask = modality_mask[name].to(feat.device, dtype=precision.dtype).view(-1, 1)
+                precision = precision * mask
             mus[name] = mu
             logvars[name] = logvar
             samples[name] = z
@@ -183,7 +187,12 @@ class VariationalReliabilityInference(nn.Module):
             mu = mus[name]
             logvar = logvars[name]
             kl = -0.5 * (1.0 + logvar - mu.pow(2) - logvar.exp())
-            kl_terms.append(kl.mean())
+            kl = kl.mean(dim=-1, keepdim=True)
+            if modality_mask is not None and name in modality_mask:
+                mask = modality_mask[name].to(mu.device, dtype=kl.dtype).view(-1, 1)
+                kl_terms.append((kl * mask).sum() / mask.sum().clamp_min(1.0))
+            else:
+                kl_terms.append(kl.mean())
 
         return {
             "fused": fused,
@@ -275,19 +284,25 @@ class SequentialPosteriorRefinement(nn.Module):
         oct_feat: torch.Tensor,
         center_labels: Optional[torch.Tensor] = None,
         update_memory: bool = False,
+        colpo_available: Optional[torch.Tensor] = None,
     ) -> Dict[str, object]:
         batch_size = clinical_prior.shape[0]
         device = clinical_prior.device
         center_prior = self.center_memory.retrieve(center_labels, batch_size, device)
+        if colpo_available is not None:
+            colpo_mask = colpo_available.to(device=device, dtype=clinical_prior.dtype).view(batch_size, 1)
+        else:
+            colpo_mask = torch.ones(batch_size, 1, device=device, dtype=clinical_prior.dtype)
 
         e_cli = self.evidence_proj["clinical_prior"](clinical_prior)
         e_center = self.evidence_proj["center"](center_prior)
-        e_colpo = self.evidence_proj["colpo"](colpo) + e_center
+        e_colpo = (self.evidence_proj["colpo"](colpo) + e_center) * colpo_mask
         e_oct = self.evidence_proj["oct"](oct_feat)
 
         z0 = self.initial_state(clinical_prior)
         z1 = self._update(z0, e_cli)
-        z2 = self._update(z1, e_colpo)
+        z2_candidate = self._update(z1, e_colpo)
+        z2 = z2_candidate * colpo_mask + z1 * (1.0 - colpo_mask)
         z3 = self._update(z2, e_oct)
 
         if update_memory:
@@ -643,6 +658,91 @@ class ResidualFeatureAdapter(nn.Module):
         return features + torch.clamp(self.scale, min=0.0, max=1.0) * self.adapter(features)
 
 
+class LowRankBridge(nn.Module):
+    """Minimal LoRA-style residual bridge with a shared low-rank down path."""
+
+    def __init__(self, dim: int = 768, rank: int = 8, alpha: float = 16.0, dropout: float = 0.1):
+        super().__init__()
+        self.dim = dim
+        self.rank = max(int(rank), 1)
+        self.scaling = float(alpha) / float(self.rank)
+        self.dropout = nn.Dropout(dropout)
+        self.down = nn.Linear(dim, self.rank, bias=False)
+        self.up = nn.Linear(self.rank, dim, bias=False)
+        nn.init.kaiming_uniform_(self.down.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.up.weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.up(self.down(self.dropout(x))) * self.scaling
+
+
+class CrossModalSharedLoRABridge(nn.Module):
+    """
+    Shared LoRA bridge for auxiliary colposcopy evidence.
+
+    The shared low-rank representation is projected into Q/K/V residuals before
+    cross-modal attention and into a final-fusion residual before diagnosis.
+    This keeps the OCT+Text expert path intact while allowing a lightweight
+    colposcopy-to-expert feature translation path.
+    """
+
+    def __init__(self, dim: int = 768, rank: int = 8, alpha: float = 16.0, dropout: float = 0.1):
+        super().__init__()
+        self.dim = dim
+        self.rank = max(int(rank), 1)
+        self.scaling = float(alpha) / float(self.rank)
+        self.dropout = nn.Dropout(dropout)
+        self.shared_down = nn.Linear(dim, self.rank, bias=False)
+        self.q_up = nn.Linear(self.rank, dim, bias=False)
+        self.k_up = nn.Linear(self.rank, dim, bias=False)
+        self.v_up = nn.Linear(self.rank, dim, bias=False)
+        self.final_up = nn.Linear(self.rank, dim, bias=False)
+        self.alignment_up = nn.Linear(self.rank, dim, bias=False)
+        self.norm = nn.LayerNorm(dim)
+        nn.init.kaiming_uniform_(self.shared_down.weight, a=math.sqrt(5))
+        for module in (self.q_up, self.k_up, self.v_up, self.final_up, self.alignment_up):
+            nn.init.zeros_(module.weight)
+
+    def _latent(self, colpo_context: torch.Tensor) -> torch.Tensor:
+        return self.shared_down(self.dropout(colpo_context))
+
+    def aligned_colpo(self, colpo_context: torch.Tensor) -> torch.Tensor:
+        latent = self._latent(colpo_context)
+        return self.norm(colpo_context + self.alignment_up(latent) * self.scaling)
+
+    def apply_attention(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        colpo_context: Optional[torch.Tensor],
+        colpo_available: bool,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        if colpo_context is None or not colpo_available:
+            return query, key, value, None
+        latent = self._latent(colpo_context)
+        delta_q = self.q_up(latent).unsqueeze(1) * self.scaling
+        delta_k = self.k_up(latent).unsqueeze(1) * self.scaling
+        delta_v = self.v_up(latent).unsqueeze(1) * self.scaling
+        aligned = self.norm(colpo_context + self.alignment_up(latent) * self.scaling)
+        return query + delta_q, key + delta_k, value + delta_v, aligned
+
+    def apply_final(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        colpo_context: Optional[torch.Tensor],
+        colpo_available: bool,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        if colpo_context is None or not colpo_available:
+            return query, key, value, None
+        latent = self._latent(colpo_context)
+        delta = self.final_up(latent).unsqueeze(1) * self.scaling
+        aligned = self.norm(colpo_context + self.alignment_up(latent) * self.scaling)
+        return query + delta, key + delta, value + delta, aligned
+
+
 class BioCOT_v3_2(nn.Module):
     """
     Bio-COT 3.2 Enhanced Version (整合5.0所有优势)
@@ -699,6 +799,15 @@ class BioCOT_v3_2(nn.Module):
         use_text_derived_asccp: bool = True,
         asccp_text_model_name: Optional[str] = None,
         asccp_text_local_files_only: bool = True,
+        enable_colpo_encoder: bool = False,
+        colpo_encoder_name: str = "vit_base_patch16_224",
+        colpo_encoder_pretrained: bool = True,
+        train_colpo_encoder: bool = False,
+        use_colpo_lora_bridge: bool = False,
+        shared_lora_rank: int = 8,
+        shared_lora_alpha: float = 16.0,
+        shared_lora_dropout: float = 0.1,
+        colpo_bridge_ot_weight: float = 1.0,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -723,6 +832,10 @@ class BioCOT_v3_2(nn.Module):
         self.use_coe_supervision = use_coe_supervision
         self.detach_coe_readout_inputs = detach_coe_readout_inputs
         self.use_visual_domain_adapter = use_visual_domain_adapter
+        self.enable_colpo_encoder = bool(enable_colpo_encoder)
+        self.train_colpo_encoder = bool(train_colpo_encoder)
+        self.use_colpo_lora_bridge = bool(use_colpo_lora_bridge)
+        self.colpo_bridge_ot_weight = float(colpo_bridge_ot_weight)
         self.current_epoch = 0
         
         # ============================================================
@@ -739,6 +852,34 @@ class BioCOT_v3_2(nn.Module):
         else:
             self.visual_encoder = None
             self.num_stages = 1
+
+        self.colpo_encoder = None
+        self.colpo_encoder_projector = None
+        if self.enable_colpo_encoder:
+            try:
+                import timm
+
+                self.colpo_encoder = timm.create_model(
+                    colpo_encoder_name,
+                    pretrained=colpo_encoder_pretrained,
+                    num_classes=0,
+                )
+                colpo_dim = getattr(self.colpo_encoder, "num_features", None) or getattr(self.colpo_encoder, "embed_dim", None)
+                if colpo_dim is None:
+                    raise ValueError(f"无法从 colpo_encoder={colpo_encoder_name} 推断输出维度")
+                self.colpo_encoder_projector = nn.Sequential(
+                    nn.Linear(int(colpo_dim), embed_dim),
+                    nn.LayerNorm(embed_dim),
+                    nn.GELU(),
+                    nn.Dropout(dropout_rate * 0.25),
+                )
+                if not self.train_colpo_encoder:
+                    for param in self.colpo_encoder.parameters():
+                        param.requires_grad = False
+                for module in self.colpo_encoder.modules():
+                    setattr(module, "_skip_biocot_init", True)
+            except Exception as exc:
+                raise RuntimeError(f"初始化独立阴道镜编码器失败: {colpo_encoder_name}") from exc
         
         # ============================================================
         # Legacy VLM retriever hook
@@ -923,6 +1064,16 @@ class BioCOT_v3_2(nn.Module):
             nn.Dropout(dropout_rate * 0.5),
         )
         self.modality_cross_attn = nn.MultiheadAttention(embed_dim, num_heads=4, batch_first=True)
+        self.colpo_lora_bridge = (
+            CrossModalSharedLoRABridge(
+                dim=embed_dim,
+                rank=shared_lora_rank,
+                alpha=shared_lora_alpha,
+                dropout=shared_lora_dropout,
+            )
+            if self.use_colpo_lora_bridge
+            else None
+        )
         self.late_heads = nn.ModuleDict(
             {
                 "oct": nn.Linear(embed_dim, num_classes),
@@ -1020,6 +1171,46 @@ class BioCOT_v3_2(nn.Module):
         if self.use_visual_notes:
             self.visual_notes_module.set_epoch(epoch)
 
+    def freeze_expert_base(self, freeze_colpo_encoder: Optional[bool] = None) -> None:
+        """
+        Freeze the pretrained OCT+Text expert base for downstream Shared-LoRA adaptation.
+
+        The intended downstream path is:
+        frozen OCT visual encoder + frozen semantic prior modules + frozen core
+        reliability inference, with gradients flowing through the auxiliary
+        colposcopy bridge, optional colpo projector, and task heads.
+        """
+        for param in self.parameters():
+            param.requires_grad = False
+
+        should_freeze_colpo = (not self.train_colpo_encoder) if freeze_colpo_encoder is None else bool(freeze_colpo_encoder)
+        if self.colpo_encoder is not None and not should_freeze_colpo:
+            for param in self.colpo_encoder.parameters():
+                param.requires_grad = True
+
+        for module_name in ("colpo_lora_bridge", "colpo_encoder_projector", "classifier"):
+            module = getattr(self, module_name, None)
+            if module is not None:
+                for param in module.parameters():
+                    param.requires_grad = True
+
+    def trainable_parameter_summary(self) -> Dict[str, object]:
+        rows = []
+        total = 0
+        trainable = 0
+        for name, param in self.named_parameters():
+            n = int(param.numel())
+            total += n
+            if param.requires_grad:
+                trainable += n
+                rows.append({"name": name, "num_parameters": n})
+        return {
+            "total_parameters": total,
+            "trainable_parameters": trainable,
+            "trainable_ratio": trainable / max(total, 1),
+            "trainable_tensors": rows,
+        }
+
     def extract_features(self, feat_raw, z_sem, beta):
         """Helper to process features with Visual Notes"""
         if self.use_visual_notes and len(feat_raw.shape) == 3:
@@ -1030,11 +1221,32 @@ class BioCOT_v3_2(nn.Module):
             feat_pooled = feat_raw if len(feat_raw.shape) == 2 else feat_raw.mean(dim=1)
             return feat_pooled, None
 
+    def encode_colpo_auxiliary(self, f_colpo: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        """Encode the auxiliary colposcopy modality when an independent encoder is configured."""
+        if f_colpo is None:
+            return None
+        if self.colpo_encoder is None or self.colpo_encoder_projector is None:
+            return f_colpo
+        if f_colpo.dim() == 5:
+            batch_size, num_views = f_colpo.shape[:2]
+            flat = f_colpo.reshape(batch_size * num_views, *f_colpo.shape[2:])
+            encoded = self.colpo_encoder(flat)
+            if encoded.dim() > 2:
+                encoded = encoded.flatten(1)
+            encoded = encoded.reshape(batch_size, num_views, -1).mean(dim=1)
+        elif f_colpo.dim() == 4:
+            encoded = self.colpo_encoder(f_colpo)
+            if encoded.dim() > 2:
+                encoded = encoded.flatten(1)
+        else:
+            return f_colpo
+        return self.colpo_encoder_projector(encoded)
+
     def forward(
         self,
         f_oct: torch.Tensor,     # [B, N, D] 或 [B, C, H, W]（如果使用分层）
-        f_colpo: torch.Tensor,   # [B, N, D] 或 [B, C, H, W]（如果使用分层）
-        image_names: List[str],  # 图像文件名列表（legacy retriever兼容；主实验不使用VLM cache）
+        f_colpo: Optional[torch.Tensor] = None,   # [B, N, D] / [B, C, H, W] / None
+        image_names: Optional[List[str]] = None,  # 图像文件名列表（legacy retriever兼容；主实验不使用VLM cache）
         clinical_info: Optional[List[str]] = None,  # 临床信息（可选）
         center_labels: Optional[torch.Tensor] = None,  # 中心标签
         labels: Optional[torch.Tensor] = None,
@@ -1047,7 +1259,7 @@ class BioCOT_v3_2(nn.Module):
         
         Args:
             f_oct: OCT图像特征 [B, N, D] 或原始图像 [B, C, H, W]
-            f_colpo: Colposcopy图像特征 [B, N, D] 或原始图像 [B, C, H, W]
+            f_colpo: Colposcopy图像特征 [B, N, D]、原始图像 [B, C, H, W]，或预训练阶段缺失(None)
             image_names: 图像文件名列表（必需）
             clinical_info: 临床信息列表（可选）
             center_labels: 中心标签（用于对抗损失和噪声感知）
@@ -1058,6 +1270,12 @@ class BioCOT_v3_2(nn.Module):
         output = {}
         B = f_oct.shape[0]
         device = f_oct.device
+        colpo_available = f_colpo is not None
+        modality_mask = {
+            "oct": torch.ones(B, 1, device=device),
+            "clinical_prior": torch.ones(B, 1, device=device),
+            "colpo": torch.ones(B, 1, device=device) if colpo_available else torch.zeros(B, 1, device=device),
+        }
         
         # 验证必需参数
         if image_names is None:
@@ -1114,17 +1332,18 @@ class BioCOT_v3_2(nn.Module):
             
             assert final_feat is not None
             f_oct_processed = final_feat  # [B, N, D]
-            f_colpo_processed = final_feat  # 简化：使用相同特征（实际可以分别处理）
+            f_colpo_processed = self.encode_colpo_auxiliary(f_colpo) if colpo_available else None
             
         else:
             # 向后兼容：使用已提取的特征
             f_oct_processed = f_oct
-            f_colpo_processed = f_colpo
+            f_colpo_processed = self.encode_colpo_auxiliary(f_colpo) if colpo_available else None
             all_noise_probs = []
 
         if self.visual_domain_adapters is not None:
             f_oct_processed = self.visual_domain_adapters["oct"](f_oct_processed)
-            f_colpo_processed = self.visual_domain_adapters["colpo"](f_colpo_processed)
+            if f_colpo_processed is not None:
+                f_colpo_processed = self.visual_domain_adapters["colpo"](f_colpo_processed)
         
         # --- Step 1: 语义锚点生成（使用VLMAugmentedRetriever或静态嵌入）---
         # 仿照exp_bio3.0_improved的方案：使用note_projector处理嵌入
@@ -1165,10 +1384,15 @@ class BioCOT_v3_2(nn.Module):
             output["clinical_structured_prior"] = structured_prior
         
         output['z_sem'] = z_sem
+        output["modality_mask"] = modality_mask
         
         # --- Step 2: 视觉笔记引导的特征提取（3.1的优势）---
         f_oct_pooled, attn_oct = self.extract_features(f_oct_processed, z_sem, current_beta)
-        f_colpo_pooled, attn_colpo = self.extract_features(f_colpo_processed, z_sem, current_beta)
+        if f_colpo_processed is not None:
+            f_colpo_pooled, attn_colpo = self.extract_features(f_colpo_processed, z_sem, current_beta)
+        else:
+            f_colpo_pooled = torch.zeros_like(f_oct_pooled)
+            attn_colpo = None
         
         if attn_oct is not None:
             output['attn_maps'] = [attn_oct, attn_colpo]
@@ -1183,6 +1407,7 @@ class BioCOT_v3_2(nn.Module):
                 },
                 center_labels=center_labels,
                 sample=self.training,
+                modality_mask=modality_mask,
             )
             f_fused = reliability["fused"]
             output["reliability"] = reliability
@@ -1192,9 +1417,13 @@ class BioCOT_v3_2(nn.Module):
             output['fusion_weights'] = {}
         elif self.fusion_strategy == "late":
             logits_oct = self.late_heads["oct"](f_oct_pooled)
-            logits_colpo = self.late_heads["colpo"](f_colpo_pooled)
             logits_prior = self.late_heads["clinical_prior"](z_sem)
-            pred = (logits_oct + logits_colpo + logits_prior) / 3.0
+            if colpo_available:
+                logits_colpo = self.late_heads["colpo"](f_colpo_pooled)
+                pred = (logits_oct + logits_colpo + logits_prior) / 3.0
+            else:
+                logits_colpo = torch.zeros_like(logits_oct)
+                pred = (logits_oct + logits_prior) / 2.0
             output["pred"] = pred
             output["logits"] = pred
             output["late_logits"] = {
@@ -1206,26 +1435,59 @@ class BioCOT_v3_2(nn.Module):
                 output["loss_components"] = {}
             return output
         elif self.fusion_strategy == "cross_attention":
-            modality_tokens = torch.stack([f_oct_pooled, f_colpo_pooled, z_sem], dim=1)
+            token_list = [f_oct_pooled]
+            if colpo_available:
+                token_list.append(f_colpo_pooled)
+            token_list.append(z_sem)
+            modality_tokens = torch.stack(token_list, dim=1)
             query = modality_tokens.mean(dim=1, keepdim=True)
-            f_fused, attn_weights = self.modality_cross_attn(query, modality_tokens, modality_tokens)
+            colpo_lora_aligned = None
+            if self.colpo_lora_bridge is not None:
+                query, modality_tokens, value_tokens, colpo_lora_aligned = self.colpo_lora_bridge.apply_attention(
+                    query,
+                    modality_tokens,
+                    modality_tokens,
+                    f_colpo_pooled,
+                    colpo_available,
+                )
+            else:
+                value_tokens = modality_tokens
+            f_fused, attn_weights = self.modality_cross_attn(query, modality_tokens, value_tokens)
             f_fused = f_fused.squeeze(1)
             output["modality_attention"] = attn_weights
+            if colpo_lora_aligned is not None:
+                output["colpo_lora_aligned"] = colpo_lora_aligned
             output['fusion_weights'] = {}
         elif self.fusion_strategy == "equal":
-            f_fused = (f_oct_pooled + f_colpo_pooled + z_sem) / 3.0
+            if colpo_available:
+                f_fused = (f_oct_pooled + f_colpo_pooled + z_sem) / 3.0
+            else:
+                f_fused = (f_oct_pooled + z_sem) / 2.0
             output['fusion_weights'] = {
-                'oct': torch.ones(B, 1, device=device) / 3.0,
-                'colpo': torch.ones(B, 1, device=device) / 3.0,
-                'clinical_prior': torch.ones(B, 1, device=device) / 3.0,
+                'oct': torch.ones(B, 1, device=device) / (3.0 if colpo_available else 2.0),
+                'colpo': torch.ones(B, 1, device=device) / 3.0 if colpo_available else torch.zeros(B, 1, device=device),
+                'clinical_prior': torch.ones(B, 1, device=device) / (3.0 if colpo_available else 2.0),
             }
         elif self.adaptive_fusion is not None:
-            f_fused, (w_oct, w_colpo) = self.adaptive_fusion(f_oct_pooled, f_colpo_pooled)
-            output['fusion_weights'] = {'oct': w_oct, 'colpo': w_colpo}
+            if colpo_available:
+                f_fused, (w_oct, w_colpo) = self.adaptive_fusion(f_oct_pooled, f_colpo_pooled)
+                output['fusion_weights'] = {'oct': w_oct, 'colpo': w_colpo}
+            else:
+                f_fused = (f_oct_pooled + z_sem) / 2.0
+                output['fusion_weights'] = {
+                    'oct': torch.ones(B, 1, device=device) * 0.5,
+                    'colpo': torch.zeros(B, 1, device=device),
+                    'clinical_prior': torch.ones(B, 1, device=device) * 0.5,
+                }
         else:
-            f_fused = (f_oct_pooled + f_colpo_pooled) / 2.0
-            output['fusion_weights'] = {'oct': torch.ones(B, 1, device=device) * 0.5, 
-                                        'colpo': torch.ones(B, 1, device=device) * 0.5}
+            if colpo_available:
+                f_fused = (f_oct_pooled + f_colpo_pooled) / 2.0
+                output['fusion_weights'] = {'oct': torch.ones(B, 1, device=device) * 0.5,
+                                            'colpo': torch.ones(B, 1, device=device) * 0.5}
+            else:
+                f_fused = f_oct_pooled
+                output['fusion_weights'] = {'oct': torch.ones(B, 1, device=device),
+                                            'colpo': torch.zeros(B, 1, device=device)}
 
         if self.direct_fusion_only:
             pred = self.classifier(f_fused)
@@ -1241,17 +1503,22 @@ class BioCOT_v3_2(nn.Module):
         # --- Step 4: explicit cached-feature posterior refinement ---
         modality_targets = {
             "oct": f_oct_pooled,
-            "colpo": f_colpo_pooled,
             "clinical_prior": z_sem,
         }
+        if colpo_available:
+            modality_targets["colpo"] = f_colpo_pooled
         posterior = None
         if self.posterior_refiner is not None:
-            refine_features = modality_targets
+            refine_features = {
+                "oct": f_oct_pooled,
+                "colpo": f_colpo_pooled,
+                "clinical_prior": z_sem,
+            }
             if self.variational_reliability is not None and "reliability" in output:
                 samples = output["reliability"].get("samples", {})
                 refine_features = {
                     "oct": samples.get("oct", f_oct_pooled),
-                    "colpo": samples.get("colpo", f_colpo_pooled),
+                    "colpo": samples.get("colpo", f_colpo_pooled) if colpo_available else f_colpo_pooled,
                     "clinical_prior": samples.get("clinical_prior", z_sem),
                 }
             posterior = self.posterior_refiner(
@@ -1260,6 +1527,7 @@ class BioCOT_v3_2(nn.Module):
                 oct_feat=refine_features["oct"],
                 center_labels=center_labels,
                 update_memory=self.training,
+                colpo_available=modality_mask["colpo"],
             )
             output["posterior_trajectory"] = posterior["trajectory"]
             output["posterior_evidence"] = posterior["evidence"]
@@ -1298,7 +1566,21 @@ class BioCOT_v3_2(nn.Module):
         if self.final_fusion:
             z_causal_expanded = z_causal.unsqueeze(1)
             z_sem_expanded = z_sem.unsqueeze(1)
-            f_final, _ = self.final_fusion(z_causal_expanded, z_sem_expanded, z_sem_expanded)
+            final_query = z_causal_expanded
+            final_key = z_sem_expanded
+            final_value = z_sem_expanded
+            final_lora_aligned = None
+            if self.colpo_lora_bridge is not None:
+                final_query, final_key, final_value, final_lora_aligned = self.colpo_lora_bridge.apply_final(
+                    final_query,
+                    final_key,
+                    final_value,
+                    f_colpo_pooled,
+                    colpo_available,
+                )
+            if final_lora_aligned is not None:
+                output["colpo_lora_aligned"] = final_lora_aligned
+            f_final, _ = self.final_fusion(final_query, final_key, final_value)
             f_final = f_final.squeeze(1) + z_causal
         else:
             f_final = z_causal + z_sem
@@ -1318,6 +1600,20 @@ class BioCOT_v3_2(nn.Module):
             # 6.1 OT Loss
             if self.use_ot:
                 loss_dict['L_ot'] = self.ot_loss(z_causal, z_sem)
+
+            colpo_lora_aligned = output.get("colpo_lora_aligned")
+            if self.use_ot and colpo_lora_aligned is not None and colpo_available:
+                bridge_ot = 0.5 * (
+                    self.ot_loss(colpo_lora_aligned, z_sem)
+                    + self.ot_loss(colpo_lora_aligned, z_causal)
+                )
+                bridge_align = 1.0 - F.cosine_similarity(
+                    F.normalize(colpo_lora_aligned, dim=-1),
+                    F.normalize(z_sem, dim=-1),
+                    dim=-1,
+                ).mean()
+                loss_dict["L_colpo_bridge_ot"] = self.colpo_bridge_ot_weight * bridge_ot
+                loss_dict["L_colpo_bridge_align"] = bridge_align
 
             if posterior is not None:
                 loss_dict["L_posterior_smooth"] = posterior["smooth_loss"]
@@ -1491,9 +1787,20 @@ def create_bio_cot_v3_2(config):
         use_text_derived_asccp=getattr(config, 'use_text_derived_asccp', True),
         asccp_text_model_name=getattr(config, 'asccp_text_model_name', None),
         asccp_text_local_files_only=getattr(config, 'asccp_text_local_files_only', True),
+        enable_colpo_encoder=getattr(config, 'enable_colpo_encoder', False),
+        colpo_encoder_name=getattr(config, 'colpo_encoder_name', "vit_base_patch16_224"),
+        colpo_encoder_pretrained=getattr(config, 'colpo_encoder_pretrained', True),
+        train_colpo_encoder=getattr(config, 'train_colpo_encoder', False),
+        use_colpo_lora_bridge=getattr(config, 'use_colpo_lora_bridge', False),
+        shared_lora_rank=getattr(config, 'shared_lora_rank', 8),
+        shared_lora_alpha=getattr(config, 'shared_lora_alpha', 16.0),
+        shared_lora_dropout=getattr(config, 'shared_lora_dropout', 0.1),
+        colpo_bridge_ot_weight=getattr(config, 'colpo_bridge_ot_weight', 1.0),
     )
     # Set legacy retriever flag. Main no-report configs keep this False.
     model.use_vlm_retriever = use_vlm_retriever
+    if getattr(config, 'freeze_expert_base_for_lora', False):
+        model.freeze_expert_base(freeze_colpo_encoder=getattr(config, 'freeze_colpo_encoder_for_lora', None))
     if getattr(config, 'freeze_visual_encoder', False) and getattr(model, 'visual_encoder', None) is not None:
         for param in model.visual_encoder.parameters():
             param.requires_grad = False
