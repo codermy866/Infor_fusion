@@ -1,0 +1,87 @@
+experiment_name: hydra_step2_8_auc_recovery_information_fusion
+output_dir: outputs/publishable_v2/step2_8_auc_recovery_information_fusion
+
+data:
+  data_lock: outputs/publishable_v2/data_lock/data_lock_n1897.csv
+  split_manifest: outputs/publishable_v2/splits/split_manifest_v2.csv
+  loco_folds: outputs/publishable_v2/splits/loco_folds_v2.json
+  raw_image_manifest: outputs/publishable_v2/step2_6_active_full_runner_recovery/manifests/raw_image_manifest_n1897.csv
+  step2_6_adapter_features: outputs/publishable_v2/step2_6_active_full_runner_recovery/manifests/raw_adapter_features_n1897.csv
+
+source_predictions:
+  step2_all_test: outputs/publishable_v2/step2_main_loco/predictions/patient_level_predictions_all_models.csv
+  step2_all_validation: outputs/publishable_v2/step2_main_loco/predictions/validation_predictions_all_models.csv
+  step2_surrogate_hydra: outputs/publishable_v2/step2_main_loco/predictions/patient_level_predictions_hydra_full.csv
+  step2_6_active_visual: outputs/publishable_v2/step2_6_active_full_runner_recovery/predictions/active_visual_baseline_predictions.csv
+  step2_6_active_hydra_minimal: outputs/publishable_v2/step2_6_active_full_runner_recovery/predictions/active_hydra_minimal_predictions.csv
+  step2_7_selected_route_b: outputs/publishable_v2/step2_7_safety_constrained_route_b/predictions/selected_route_b_predictions.csv
+
+pretrained_checkpoints:
+  oct_ssl: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/aux_oct_pretraining/checkpoints/best_oct_encoder.pt
+  oct_vlm_alignment: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/oct_vlm_alignment/checkpoints/best_oct_vlm_aligned_encoder.pt
+
+endpoints:
+  train_endpoint: pathology_cin2plus
+  safety_endpoint: pathology_cin3plus
+
+input_sampling:
+  oct_bscans_per_case_candidates: [5, 10, 20]
+  colposcopy_images_per_case_candidates: [1, 3, all_available]
+  tta_enabled_for_final: true
+  tta_repeats: 5
+
+training:
+  seeds_first_pass: [42]
+  seeds_final: [42, 123, 456]
+  logistic_epochs: 500
+  rank_epochs: 250
+  learning_rate: 0.03
+  rank_learning_rate: 0.01
+  l2: 0.001
+
+losses:
+  bce_or_focal: true
+  pairwise_auc_loss: true
+  pairwise_auc_loss_weight_candidates: [0.05, 0.10, 0.20]
+  supervised_contrastive_loss: false
+  center_adversarial_loss: true
+  center_adversarial_weight_candidates: [0.01, 0.05, 0.10]
+
+fusion_variants:
+  - OCT_MIL_Only_5
+  - OCT_MIL_Only_10
+  - OCT_MIL_Only_20
+  - Colposcopy_MIL_All
+  - DualVisual_MIL_LateFusion
+  - Clinical_Only
+  - HyDRA_MIL_GatedFusion
+  - HyDRA_IFusion_CrossAttention
+  - HyDRA_IFusion_AuxOCT
+  - HyDRA_IFusion_AuxOCT_Semantic
+
+model_selection:
+  first_pass_metric: validation_auc_cin2plus
+  safety_filter_metric: validation_cin3_sensitivity_at_t_cin3_safety95
+  minimum_validation_cin3_sensitivity: 0.95
+  select_top_k: 5
+
+thresholds:
+  threshold_source: validation_only
+  operating_points:
+    - t_youden
+    - t_cin2_safety95
+    - t_cin3_safety95
+    - t_joint_cin2_90_cin3_95
+
+statistics:
+  bootstrap_iterations: 500
+  bootstrap_seed: 2026
+  confidence_level: 0.95
+  paired_tests: true
+  multiple_comparison_correction: holm
+
+reporting:
+  primary_metric: pooled_loco_auc_cin2plus
+  safety_metric: pooled_loco_cin3_sensitivity
+  centre_level_single_class_policy: NA_for_undefined_metrics
+  include_both_class_centres_only_sensitivity_analysis: true

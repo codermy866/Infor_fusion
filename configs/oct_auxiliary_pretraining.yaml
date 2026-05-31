@@ -1,0 +1,37 @@
+experiment_name: oct_auxiliary_pretraining_huaxi_xiangya
+output_dir: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/aux_oct_pretraining
+
+data:
+  auxiliary_oct_roots:
+    - /data2/10center_datas/Hua_Xi/
+    - /data2/10center_datas/XiangYa/
+  n1897_data_lock: outputs/publishable_v2/data_lock/data_lock_n1897.csv
+  use_n1897_oct_for_pretraining: false
+  avoid_loco_test_leakage: true
+
+pretraining:
+  method_priority: [mae, dino, simclr, moco]
+  selected_method: auto
+  image_size: 224
+  bscan_sampling_per_volume: 20
+  epochs: 100
+  batch_size: 64
+  learning_rate: 1.0e-4
+  weight_decay: 0.05
+  mixed_precision: true
+  save_best_by: validation_reconstruction_or_contrastive_loss
+  execution_mode: compute_limited_proxy
+  proxy_epochs: 12
+
+quality_control:
+  remove_empty_or_corrupt_images: true
+  min_image_size: 64
+  write_image_inventory: true
+  write_failed_images: true
+  stop_if_unreadable_fraction_exceeds: 0.20
+
+outputs:
+  encoder_checkpoint: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/aux_oct_pretraining/checkpoints/best_oct_encoder.pt
+  image_inventory: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/aux_oct_pretraining/audit/aux_oct_image_inventory.csv
+  failed_images: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/aux_oct_pretraining/audit/aux_oct_failed_images.csv
+  qc_report: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/aux_oct_pretraining/audit/aux_oct_qc_report.md

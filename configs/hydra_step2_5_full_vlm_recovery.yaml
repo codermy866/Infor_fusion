@@ -1,0 +1,129 @@
+experiment_name: hydra_coe_step2_5_full_vlm_recovery_n1897
+output_dir: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery
+
+data:
+  n1897_data_lock: outputs/publishable_v2/data_lock/data_lock_n1897.csv
+  n1897_split_manifest: outputs/publishable_v2/splits/split_manifest_v2.csv
+  n1897_loco_folds: outputs/publishable_v2/splits/loco_folds_v2.json
+  feature_cache_availability: outputs/publishable_v2/audit/feature_cache_availability.csv
+  step2_surrogate_predictions: outputs/publishable_v2/step2_main_loco/predictions/patient_level_predictions_all_models.csv
+  step2_hydra_surrogate_predictions: outputs/publishable_v2/step2_main_loco/predictions/patient_level_predictions_hydra_full.csv
+  step2_table2: outputs/publishable_v2/step2_main_loco/tables/Table2_Main_LOCO_Diagnostic_Performance.csv
+  step2_table3: outputs/publishable_v2/step2_main_loco/tables/Table3_Centre_Wise_HyDRA_LOCO.csv
+
+legacy_diagnostic_only:
+  enabled: true
+  allow_985_only_in_diagnostic_branch: true
+  old_split_manifest: MISSING_OLD_985_SPLIT_MANIFEST
+  old_data_lock: MISSING_OLD_985_DATA_LOCK
+  old_outputs: outputs/diagnostic_attribution_985
+  corrected403_outputs: paper_revision/results/real_50epoch_5center_corrected
+  output_dir: outputs/diagnostic_attribution_985
+
+endpoints:
+  train_endpoint: pathology_cin2plus
+  safety_endpoint: pathology_cin3plus
+
+training:
+  seeds: [42, 123, 456]
+  max_epochs_full: 80
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  optimizer: AdamW
+  learning_rate_visual: 2.0e-5
+  learning_rate_fusion: 1.0e-4
+  learning_rate_classifier: 1.0e-4
+  learning_rate_prototype: 5.0e-5
+  learning_rate_text_adapter: 5.0e-5
+  weight_decay: 1.0e-4
+  mixed_precision: true
+  early_stopping:
+    enabled: true
+    monitor: validation_auc_cin2plus
+    patience: 15
+
+thresholds:
+  main_operating_point: t_safety95
+  threshold_source: validation_only
+  additional_operating_points: [t_youden, t_safety90]
+
+statistics:
+  bootstrap_iterations: 2000
+  bootstrap_seed: 2026
+  confidence_level: 0.95
+  paired_tests: true
+  multiple_comparison_correction: holm
+
+model_variants:
+  - name: surrogate_step2_reference
+    train: false
+    load_predictions_from_step2: true
+  - name: full_hydra_coe_no_aux
+    train: true
+    use_end_to_end_visual_encoder: true
+    use_cross_attention_transformer: true
+    use_posterior_refinement: true
+    use_asccp_prototype_prior: true
+    use_coe_trajectory_learning: true
+    use_aux_oct_ssl: false
+    use_oct_vlm_alignment: false
+  - name: full_hydra_coe_aux_oct_ssl
+    train: true
+    use_end_to_end_visual_encoder: true
+    use_cross_attention_transformer: true
+    use_posterior_refinement: true
+    use_asccp_prototype_prior: true
+    use_coe_trajectory_learning: true
+    use_aux_oct_ssl: true
+    aux_oct_checkpoint: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/aux_oct_pretraining/checkpoints/best_oct_encoder.pt
+    use_oct_vlm_alignment: false
+  - name: full_hydra_coe_aux_oct_vlm_align
+    train: true
+    use_end_to_end_visual_encoder: true
+    use_cross_attention_transformer: true
+    use_posterior_refinement: true
+    use_asccp_prototype_prior: true
+    use_coe_trajectory_learning: true
+    use_aux_oct_ssl: true
+    aux_oct_checkpoint: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/aux_oct_pretraining/checkpoints/best_oct_encoder.pt
+    use_oct_vlm_alignment: true
+    oct_vlm_alignment_checkpoint: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/oct_vlm_alignment/checkpoints/best_oct_vlm_aligned_encoder.pt
+
+loss_weights:
+  loss_cls: 1.0
+  loss_reliability: 0.2
+  loss_evidence: 0.1
+  loss_kl_prior: 0.1
+  loss_align: 0.2
+  loss_coe: 0.1
+  loss_robust: 0.05
+  loss_prototype: 0.2
+
+ablation_variants:
+  - name: full_minus_end_to_end_visual
+    based_on: full_hydra_coe_aux_oct_vlm_align
+    use_end_to_end_visual_encoder: false
+  - name: full_minus_cross_attention
+    based_on: full_hydra_coe_aux_oct_vlm_align
+    use_cross_attention_transformer: false
+  - name: full_minus_posterior_refinement
+    based_on: full_hydra_coe_aux_oct_vlm_align
+    use_posterior_refinement: false
+  - name: full_minus_asccp_prototype
+    based_on: full_hydra_coe_aux_oct_vlm_align
+    use_asccp_prototype_prior: false
+  - name: full_minus_coe_trajectory
+    based_on: full_hydra_coe_aux_oct_vlm_align
+    use_coe_trajectory_learning: false
+  - name: full_minus_oct_ssl
+    based_on: full_hydra_coe_aux_oct_vlm_align
+    use_aux_oct_ssl: false
+    use_oct_vlm_alignment: true
+  - name: full_minus_oct_vlm_alignment
+    based_on: full_hydra_coe_aux_oct_vlm_align
+    use_aux_oct_ssl: true
+    use_oct_vlm_alignment: false
+
+legacy_policy:
+  forbid_985_in_main_pipeline: true
+  allow_985_only_in_diagnostic_attribution: true

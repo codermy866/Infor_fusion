@@ -1,0 +1,100 @@
+experiment_name: hydra_step2_9_domain_generalisation_recovery
+output_dir: outputs/publishable_v2/step2_9_domain_generalisation_recovery
+
+data:
+  data_lock: outputs/publishable_v2/data_lock/data_lock_n1897.csv
+  split_manifest: outputs/publishable_v2/splits/split_manifest_v2.csv
+  loco_folds: outputs/publishable_v2/splits/loco_folds_v2.json
+  raw_image_manifest: outputs/publishable_v2/step2_6_active_full_runner_recovery/manifests/raw_image_manifest_n1897.csv
+  step2_8_feature_table: outputs/publishable_v2/step2_8_auc_recovery_information_fusion/manifests/multiscan_feature_table.csv
+
+previous_results:
+  step2_all_test: outputs/publishable_v2/step2_main_loco/predictions/patient_level_predictions_all_models.csv
+  step2_all_validation: outputs/publishable_v2/step2_main_loco/predictions/validation_predictions_all_models.csv
+  step2_surrogate: outputs/publishable_v2/step2_main_loco/predictions/patient_level_predictions_hydra_full.csv
+  step2_6_active_minimal: outputs/publishable_v2/step2_6_active_full_runner_recovery/predictions/active_hydra_minimal_predictions.csv
+  step2_8_best: outputs/publishable_v2/step2_8_auc_recovery_information_fusion/predictions/auc_safety_ensemble_predictions.csv
+  step2_8_metrics: outputs/publishable_v2/step2_8_auc_recovery_information_fusion/statistics/auc_recovery_metrics.csv
+  step2_8_failure_report: outputs/publishable_v2/step2_8_auc_recovery_information_fusion/audit/auc_recovery_diagnostic_report.md
+
+endpoints:
+  train_endpoint: pathology_cin2plus
+  safety_endpoint: pathology_cin3plus
+
+validation_design:
+  replace_random_validation_with_inner_centre_validation: true
+  inner_validation_scheme: leave_one_training_centre_out
+  use_random_validation_only_as_secondary: true
+  model_selection_metric: mean_inner_validation_auc
+  safety_filter_metric: mean_inner_validation_cin3_sensitivity_at_t_cin3_safety95
+  minimum_inner_validation_cin3_sensitivity: 0.95
+
+sampling:
+  centre_balanced_sampler: true
+  class_balanced_within_centre: true
+  positive_oversampling_cap: 3.0
+  all_positive_centre_policy: sensitivity_only_for_centre_metrics
+
+normalisation:
+  oct_intensity_normalisation:
+    candidates: [global, per_case, per_centre_training_only, robust_percentile]
+  colposcopy_colour_normalisation:
+    candidates: [none, gray_world_proxy, histogram_matching_training_only_proxy]
+  feature_harmonisation:
+    candidates: [none, coral_training_centres, mmd_centroid_training_centres]
+
+domain_generalisation_methods:
+  candidates:
+    - centre_balanced_only
+    - group_dro
+    - coral_alignment
+    - mmd_alignment
+    - centre_adversarial_grl
+    - domain_specific_batchnorm_training_centres
+    - mixstyle
+    - fishr_or_variance_penalty_if_available
+    - combined_groupdro_coral
+    - combined_groupdro_mmd
+    - combined_groupdro_coral_mixstyle
+
+models:
+  base_architectures:
+    - Best_Step2_8_IFusion_Model
+    - HyDRA_DG_MIL_GatedFusion
+    - HyDRA_DG_CrossAttention
+  safe_model_names:
+    - HyDRA-DG-Adapter
+    - HyDRA-DG-MIL
+    - HyDRA-DG-Fusion
+    - HyDRA-DG-Safety
+  use_aux_oct_ssl_checkpoint: false
+  use_oct_semantic_checkpoint: false
+
+training:
+  seeds_first_pass: [42]
+  seeds_final: [42, 123, 456]
+  logistic_epochs: 450
+  learning_rate: 0.03
+  l2: 0.001
+  group_dro_eta: 0.05
+  select_top_k: 4
+
+thresholds:
+  threshold_source: inner_validation_only
+  operating_points:
+    - t_youden
+    - t_cin3_safety95
+    - t_joint_cin2_90_cin3_95
+
+statistics:
+  bootstrap_iterations: 2000
+  bootstrap_seed: 2026
+  confidence_level: 0.95
+  paired_tests: true
+  multiple_comparison_correction: holm
+
+reporting:
+  primary_view: pooled_loco_all_1897
+  secondary_view: both_class_centres_only
+  centre_level_single_class_policy: NA_for_undefined_metrics
+  all_positive_centre_sensitivity_only: true

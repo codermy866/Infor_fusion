@@ -1,0 +1,77 @@
+experiment_name: hydra_step2_10_target_adaptation_final_if_decision
+output_dir: outputs/publishable_v2/step2_10_target_adaptation_final_if_decision
+
+data:
+  data_lock: outputs/publishable_v2/data_lock/data_lock_n1897.csv
+  split_manifest: outputs/publishable_v2/splits/split_manifest_v2.csv
+  loco_folds: outputs/publishable_v2/splits/loco_folds_v2.json
+  raw_image_manifest: outputs/publishable_v2/step2_6_active_full_runner_recovery/manifests/raw_image_manifest_n1897.csv
+  step2_8_feature_table: outputs/publishable_v2/step2_8_auc_recovery_information_fusion/manifests/multiscan_feature_table.csv
+
+previous_results:
+  step2_surrogate: outputs/publishable_v2/step2_main_loco/predictions/patient_level_predictions_hydra_full.csv
+  step2_6_active_minimal: outputs/publishable_v2/step2_6_active_full_runner_recovery/predictions/active_hydra_minimal_predictions.csv
+  step2_8_best: outputs/publishable_v2/step2_8_auc_recovery_information_fusion/
+  step2_9_best_dg: outputs/publishable_v2/step2_9_domain_generalisation_recovery/
+  step2_9_config: configs/hydra_step2_9_domain_generalisation.yaml
+
+endpoints:
+  primary_endpoint: pathology_cin2plus
+  safety_endpoint: pathology_cin3plus
+
+target_adaptation:
+  enabled: true
+  allowed_target_information: unlabelled_images_or_features_only
+  forbidden_target_information:
+    - pathology_cin2plus
+    - pathology_cin3plus
+    - threshold_labels
+    - validation_labels_from_target_centre
+  methods:
+    - target_centre_normalisation
+    - source_free_coral
+    - source_free_mmd
+    - prototype_distribution_alignment_no_labels
+    - confidence_filtered_pseudo_label_no_threshold_from_test_labels
+  unavailable_gradient_methods:
+    - adaptive_batchnorm_unlabelled_target
+    - tent_entropy_minimisation
+  confidence_filtering:
+    enabled: true
+    thresholds_selected_on_inner_validation: [0.80, 0.90, 0.95]
+
+failure_centre_focus:
+  hardest_centre_name: 襄阳市中心医院
+  evaluate_hardest_centre_separately: true
+  do_not_train_on_hardest_centre_labels: true
+  analyse_false_negative_cases: true
+
+tracks:
+  inductive_loco:
+    use_target_unlabelled_adaptation: false
+  transductive_tta:
+    use_target_unlabelled_adaptation: true
+
+thresholds:
+  threshold_source: source_inner_validation_only
+  operating_points:
+    - t_youden
+    - t_cin3_safety95
+    - t_cin3_safety98
+    - t_joint_cin2_90_cin3_95
+  safety_target_main: 0.95
+  safety_target_strict: 0.98
+
+statistics:
+  bootstrap_iterations: 2000
+  bootstrap_seed: 2026
+  confidence_level: 0.95
+  paired_tests: true
+  multiple_comparison_correction: holm
+
+reporting:
+  primary_view: pooled_loco_all_1897
+  secondary_view: both_class_centres_only
+  hardest_centre_view: true
+  centre_level_single_class_policy: NA_for_undefined_metrics
+  all_positive_centre_sensitivity_only: true

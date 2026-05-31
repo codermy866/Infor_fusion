@@ -1,0 +1,71 @@
+experiment_name: hydra_step2_6_active_full_runner_recovery
+output_dir: outputs/publishable_v2/step2_6_active_full_runner_recovery
+
+data:
+  data_lock: outputs/publishable_v2/data_lock/data_lock_n1897.csv
+  split_manifest: outputs/publishable_v2/splits/split_manifest_v2.csv
+  loco_folds: outputs/publishable_v2/splits/loco_folds_v2.json
+  raw_image_manifest: outputs/publishable_v2/step2_6_active_full_runner_recovery/manifests/raw_image_manifest_n1897.csv
+  raw_adapter_features: outputs/publishable_v2/step2_6_active_full_runner_recovery/manifests/raw_adapter_features_n1897.csv
+  step2_surrogate_predictions: outputs/publishable_v2/step2_main_loco/predictions/patient_level_predictions_hydra_full.csv
+  step2_table2: outputs/publishable_v2/step2_main_loco/tables/Table2_Main_LOCO_Diagnostic_Performance.csv
+  step2_table3: outputs/publishable_v2/step2_main_loco/tables/Table3_Centre_Wise_HyDRA_LOCO.csv
+  step2_5_aux_oct_ssl_checkpoint: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/aux_oct_pretraining/checkpoints/best_oct_encoder.pt
+  step2_5_oct_vlm_checkpoint: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/oct_vlm_alignment/checkpoints/best_oct_vlm_aligned_encoder.pt
+
+endpoints:
+  train_endpoint: pathology_cin2plus
+  safety_endpoint: pathology_cin3plus
+
+training:
+  seeds: [42, 123, 456]
+  first_pass_seeds: [42]
+  max_epochs_visual_baseline: 50
+  max_epochs_hydra_minimal: 80
+  max_epochs_hydra_full: 100
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  optimizer: AdamW
+  learning_rate_visual_backbone: 2.0e-5
+  learning_rate_visual_adapter: 1.0e-4
+  learning_rate_fusion: 1.0e-4
+  learning_rate_classifier: 1.0e-4
+  learning_rate_prototype: 5.0e-5
+  weight_decay: 1.0e-4
+  mixed_precision: true
+  active_adapter:
+    max_oct_images_per_case: 1
+    max_colposcopy_images_per_case: 1
+    logistic_epochs: 500
+    learning_rate: 0.03
+    l2: 0.001
+  early_stopping:
+    enabled: true
+    monitor: validation_auc_cin2plus
+    patience: 15
+
+thresholds:
+  main_operating_point: t_safety95
+  threshold_source: validation_only
+  additional_operating_points: [t_youden, t_safety90]
+
+evaluation:
+  primary_report:
+    - pooled_loco_all_1897
+    - centre_level_where_both_classes_exist
+    - all_positive_centre_sensitivity_only
+    - four_centre_both_class_loco_if_all_positive_centre_confirmed
+  bootstrap_iterations: 500
+  bootstrap_seed: 2026
+
+models:
+  active_visual_baselines:
+    - Active_ColposcopyOnly_TrainableFeatureAdapter
+    - Active_OCTOnly_AttentionMIL_TrainableFeatureAdapter
+    - Active_ColposcopyOCT_DualEncoder_TrainableFeatureAdapter
+  hydra_variants:
+    - HyDRA_CoE_Active_Minimal_TrainableFeatureAdapter_NoPrototype_NoCoE
+    - HyDRA_CoE_Active_Minimal_AuxOCTSSL
+    - HyDRA_CoE_Active_Minimal_AuxOCTVLM
+    - HyDRA_CoE_Active_Full
+    - HyDRA_CoE_Active_Full_AuxOCTVLM

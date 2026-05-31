@@ -1,0 +1,55 @@
+experiment_name: oct_vlm_semantic_alignment_huaxi_xiangya
+output_dir: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/oct_vlm_alignment
+
+data:
+  auxiliary_oct_roots:
+    - /data2/10center_datas/Hua_Xi/
+    - /data2/10center_datas/XiangYa/
+  n1897_data_lock: outputs/publishable_v2/data_lock/data_lock_n1897.csv
+  n1897_vlm_cache: MISSING_EXPLICIT_VLM_TEXT_CACHE
+  use_auxiliary_oct_only: true
+  use_n1897_cached_descriptions_for_alignment: true
+  use_pathology_labels_for_alignment: false
+  aux_inventory: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/aux_oct_pretraining/audit/aux_oct_image_inventory.csv
+
+text_sources:
+  priority:
+    - cached_vlm_description_if_available
+    - deterministic_oct_morphology_pseudo_caption
+    - asccp_guideline_prototype_text
+    - generic_oct_domain_prompt
+  deterministic_pseudo_caption_enabled: true
+  asccp_prototype_text_enabled: true
+  generic_fallback_text: "OCT cervical image with tissue-layer morphology and scattering patterns; no supervised diagnostic label is assigned."
+
+vlm_or_text_encoder:
+  mode: local_hash_text_encoder_proxy
+  freeze_large_vlm: true
+  train_lora_or_adapters: false
+  train_projection_heads: true
+  biomedical_text_encoder: MISSING_LOCAL_BIOMEDICAL_TEXT_ENCODER
+  vision_encoder_init: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/aux_oct_pretraining/checkpoints/best_oct_encoder.pt
+
+alignment_objectives:
+  image_text_contrastive: true
+  prototype_alignment: true
+  image_text_matching: false
+  masked_image_modeling_continue: false
+  no_cin_label_supervision: true
+
+training:
+  epochs: 30
+  proxy_epochs: 10
+  batch_size: 32
+  learning_rate_adapter: 5.0e-5
+  learning_rate_projection: 1.0e-4
+  temperature: 0.07
+  mixed_precision: true
+  save_best_by: validation_image_text_retrieval_recall_at_5
+  execution_mode: compute_limited_proxy
+
+outputs:
+  aligned_encoder_checkpoint: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/oct_vlm_alignment/checkpoints/best_oct_vlm_aligned_encoder.pt
+  alignment_pairs: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/oct_vlm_alignment/audit/oct_text_alignment_pairs.csv
+  text_source_summary: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/oct_vlm_alignment/audit/text_source_summary.csv
+  alignment_report: outputs/publishable_v2/step2_5_full_hydra_vlm_recovery/oct_vlm_alignment/audit/oct_vlm_alignment_report.md

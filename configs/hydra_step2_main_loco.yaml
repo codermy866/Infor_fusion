@@ -1,0 +1,75 @@
+experiment_name: hydra_coe_step2_main_loco_n1897
+parent_config: configs/hydra_publishable_v2.yaml
+output_dir: outputs/publishable_v2/step2_main_loco
+
+data:
+  data_lock: outputs/publishable_v2/data_lock/data_lock_n1897.csv
+  split_manifest: outputs/publishable_v2/splits/split_manifest_v2.csv
+  loco_folds: outputs/publishable_v2/splits/loco_folds_v2.json
+  feature_cache_availability: outputs/publishable_v2/audit/feature_cache_availability.csv
+  patch_feature_cache: paper_revision/cache/patch_features_final_1897.pt
+
+endpoints:
+  train_endpoint: pathology_cin2plus
+  safety_endpoint: pathology_cin3plus
+
+training:
+  seeds: [42, 123, 456, 789, 2026]
+  max_epochs: 50
+  batch_size: 4
+  optimizer: AdamW
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4
+  early_stopping:
+    enabled: true
+    monitor: validation_auc_cin2plus
+    patience: 10
+  mixed_precision: true
+  save_best_by: validation_auc_cin2plus
+
+thresholds:
+  main_operating_point: t_safety95
+  additional_operating_points: [t_youden, t_safety90]
+  target_sensitivity_values: [0.95, 0.90]
+  threshold_source: validation_only
+
+statistics:
+  bootstrap_iterations: 2000
+  bootstrap_seed: 2026
+  confidence_level: 0.95
+  paired_tests: true
+  auc_test: delong_if_available_else_paired_bootstrap
+  binary_test: mcnemar
+  multiple_comparison_correction: holm
+
+models:
+  mandatory:
+    - ClinicalOnly_Logistic
+    - ClinicalOnly_XGBoost
+    - ColposcopyOnly_ViT
+    - OCTOnly_ViT
+    - ColposcopyOCT_EarlyConcat
+    - ColposcopyOCT_LateFusion
+    - ColposcopyOCTText_CrossAttention
+    - BioMedCLIP_Finetuned
+    - HyDRA_CoE_Full
+  optional_if_existing_code_available:
+    - ResNet50_CO
+    - ViT_B16_CO
+    - MedCLIP_Finetuned
+    - ConVIRT_Finetuned
+    - TransUNet_ClassifierAdapted
+    - mmFormer_ClassifierAdapted
+
+implementation:
+  mode: locked_feature_cache_loco
+  notes: >
+    Step 2 uses the locked n=1897 data lock, pathology-derived endpoints, and
+    the repository's cached ViT patch features. XGBoost is substituted with
+    sklearn HistGradientBoosting when xgboost is not installed. BioMedCLIP is
+    substituted with the strongest available normalized image-text feature-cache
+    classifier because no local BioMedCLIP checkpoint is installed.
+
+legacy_policy:
+  forbid_985: true
+  forbid_old_split_837_148: true
