@@ -8,9 +8,12 @@ import torch
 import torch.nn as nn
 from typing import Optional
 
+from models.backbones import load_matching_vision_weights
+
 # 全局ViT模型实例（避免重复创建）
 _vit_model = None
 _vit_device = None
+_vit_key = None
 
 
 def extract_patch_features_with_vit(
@@ -18,7 +21,9 @@ def extract_patch_features_with_vit(
     device: torch.device, 
     log_func=None,
     batch_size: int = 16,  # 🔧 添加batch_size参数以支持分批处理
-    pretrained: bool = False  # 离线训练默认关闭HF下载
+    pretrained: bool = False,  # 离线训练默认关闭HF下载
+    model_name: str = "vit_base_patch16_224",
+    checkpoint_path: Optional[str] = None,
 ) -> torch.Tensor:
     """
     修复漏洞1：从ViT提取Patch特征（丢弃[CLS] token）
@@ -34,7 +39,7 @@ def extract_patch_features_with_vit(
         patch_features: [B, N, D] 或 [B, F, N, D] Patch特征（已丢弃[CLS]）
         N=196 for ViT-Base (14x14 patches), D=768
     """
-    global _vit_model, _vit_device
+    global _vit_model, _vit_device, _vit_key
     
     try:
         import timm
@@ -42,9 +47,10 @@ def extract_patch_features_with_vit(
         raise ImportError("timm未安装，请先安装: pip install timm")
     
     # 只在第一次调用时创建模型
-    if _vit_model is None or _vit_device != device:
+    vit_key = (str(device), str(model_name), bool(pretrained), str(checkpoint_path or ""))
+    if _vit_model is None or _vit_device != device or _vit_key != vit_key:
         if log_func:
-            log_func(f"📥 正在加载ViT模型（修复：提取Patch特征，丢弃[CLS]）...")
+            log_func(f"📥 正在加载ViT模型 {model_name}（提取Patch特征，丢弃[CLS]）...")
         
         import warnings
         with warnings.catch_warnings():
@@ -52,15 +58,20 @@ def extract_patch_features_with_vit(
             
             # 创建ViT模型（不使用global_pool，保留所有tokens）
             _vit_model = timm.create_model(
-                'vit_base_patch16_224',
+                model_name,
                 pretrained=pretrained,
                 num_classes=0,  # 去掉分类头
                 global_pool='',  # 不进行全局池化，保留所有tokens
             )
+            if checkpoint_path:
+                matched, skipped = load_matching_vision_weights(_vit_model, checkpoint_path)
+                if log_func:
+                    log_func(f"✅ 已加载视觉checkpoint: matched={matched}, skipped={skipped}, path={checkpoint_path}")
             
             _vit_model = _vit_model.to(device)
             _vit_model.eval()
             _vit_device = device
+            _vit_key = vit_key
             
             if log_func:
                 log_func(f"✅ ViT模型已加载到GPU {device}")

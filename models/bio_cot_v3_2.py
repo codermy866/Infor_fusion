@@ -52,7 +52,7 @@ else:
 from .visual_notes import VisualNotesModule
 
 # 🔥 导入5.0的模块（5.0的优势）
-from .backbones import HierarchicalViT
+from .backbones import HierarchicalViT, load_matching_vision_weights
 from .mhc_fusion import NoiseAwareMHC
 from .clinical_evolver import ClinicalEvolver
 
@@ -671,9 +671,66 @@ class LowRankBridge(nn.Module):
         self.up = nn.Linear(self.rank, dim, bias=False)
         nn.init.kaiming_uniform_(self.down.weight, a=math.sqrt(5))
         nn.init.zeros_(self.up.weight)
+        for module in self.modules():
+            setattr(module, "_skip_biocot_init", True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.up(self.down(self.dropout(x))) * self.scaling
+
+
+class LoRALinear(nn.Module):
+    """Low-rank adapter for a frozen Linear layer."""
+
+    def __init__(self, base: nn.Linear, rank: int = 8, alpha: float = 16.0, dropout: float = 0.05):
+        super().__init__()
+        if not isinstance(base, nn.Linear):
+            raise TypeError("LoRALinear can only wrap nn.Linear modules.")
+        self.base = base
+        self.rank = max(int(rank), 1)
+        self.scaling = float(alpha) / float(self.rank)
+        self.dropout = nn.Dropout(dropout)
+        self.lora_down = nn.Linear(base.in_features, self.rank, bias=False)
+        self.lora_up = nn.Linear(self.rank, base.out_features, bias=False)
+        for param in self.base.parameters():
+            param.requires_grad = False
+        nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_up.weight)
+        for module in self.modules():
+            setattr(module, "_skip_biocot_init", True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.base(x) + self.lora_up(self.lora_down(self.dropout(x))) * self.scaling
+
+
+def _parent_module(root: nn.Module, qualified_name: str) -> tuple[nn.Module, str]:
+    parts = qualified_name.split(".")
+    parent = root
+    for part in parts[:-1]:
+        parent = getattr(parent, part)
+    return parent, parts[-1]
+
+
+def inject_lora_into_linear_modules(
+    root: nn.Module,
+    target_keywords: Tuple[str, ...],
+    rank: int = 8,
+    alpha: float = 16.0,
+    dropout: float = 0.05,
+) -> int:
+    """Replace matching Linear modules with frozen-base LoRA adapters."""
+    keywords = tuple(k for k in target_keywords if k)
+    if not keywords:
+        return 0
+    replacements = []
+    for name, module in root.named_modules():
+        if isinstance(module, LoRALinear):
+            continue
+        if isinstance(module, nn.Linear) and any(key in name for key in keywords):
+            replacements.append((name, module))
+    for name, module in replacements:
+        parent, child_name = _parent_module(root, name)
+        setattr(parent, child_name, LoRALinear(module, rank=rank, alpha=alpha, dropout=dropout))
+    return len(replacements)
 
 
 class CrossModalSharedLoRABridge(nn.Module):
@@ -702,6 +759,8 @@ class CrossModalSharedLoRABridge(nn.Module):
         nn.init.kaiming_uniform_(self.shared_down.weight, a=math.sqrt(5))
         for module in (self.q_up, self.k_up, self.v_up, self.final_up, self.alignment_up):
             nn.init.zeros_(module.weight)
+        for module in self.modules():
+            setattr(module, "_skip_biocot_init", True)
 
     def _latent(self, colpo_context: torch.Tensor) -> torch.Tensor:
         return self.shared_down(self.dropout(colpo_context))
@@ -762,14 +821,18 @@ class BioCOT_v3_2(nn.Module):
         use_visual_notes: bool = True,
         use_ot: bool = True,
         use_dual: bool = True,
+        use_adversarial: bool = False,
         use_cross_attn: bool = True,
         use_adaptive_gating: bool = True,
         warmup_epochs: int = 10,
         hidden_dim: int = 768,
         # 🔥 5.0新增参数
         use_hierarchical: bool = True,  # 是否使用分层多尺度特征
+        vit_model_name: str = "vit_base_patch16_224",
+        vit_checkpoint_path: Optional[str] = None,
         extract_layers: Tuple[int, ...] = (2, 5, 8, 11),  # 提取的层索引
         vit_pretrained: bool = True,
+        raw_oct_encoder_batch_size: int = 8,
         drop_path_rate: float = 0.2,  # ViT的DropPath率
         dropout_rate: float = 0.4,  # 激进正则化
         use_noise_aware: bool = True,  # 是否使用噪声感知融合
@@ -801,6 +864,7 @@ class BioCOT_v3_2(nn.Module):
         asccp_text_local_files_only: bool = True,
         enable_colpo_encoder: bool = False,
         colpo_encoder_name: str = "vit_base_patch16_224",
+        colpo_encoder_checkpoint_path: Optional[str] = None,
         colpo_encoder_pretrained: bool = True,
         train_colpo_encoder: bool = False,
         use_colpo_lora_bridge: bool = False,
@@ -808,6 +872,13 @@ class BioCOT_v3_2(nn.Module):
         shared_lora_alpha: float = 16.0,
         shared_lora_dropout: float = 0.1,
         colpo_bridge_ot_weight: float = 1.0,
+        use_oct_encoder_lora: bool = False,
+        use_colpo_encoder_lora: bool = False,
+        use_fusion_layer_lora: bool = False,
+        encoder_lora_rank: int = 8,
+        encoder_lora_alpha: float = 16.0,
+        encoder_lora_dropout: float = 0.05,
+        encoder_lora_targets: Tuple[str, ...] = ("attn.qkv", "attn.proj"),
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -817,6 +888,7 @@ class BioCOT_v3_2(nn.Module):
         self.use_visual_notes = use_visual_notes
         self.use_ot = use_ot
         self.use_dual = use_dual
+        self.use_adversarial = use_adversarial
         self.use_adaptive_gating = use_adaptive_gating
         self.use_hierarchical = use_hierarchical
         self.use_noise_aware = use_noise_aware
@@ -836,6 +908,12 @@ class BioCOT_v3_2(nn.Module):
         self.train_colpo_encoder = bool(train_colpo_encoder)
         self.use_colpo_lora_bridge = bool(use_colpo_lora_bridge)
         self.colpo_bridge_ot_weight = float(colpo_bridge_ot_weight)
+        self.use_oct_encoder_lora = bool(use_oct_encoder_lora)
+        self.use_colpo_encoder_lora = bool(use_colpo_encoder_lora)
+        self.use_fusion_layer_lora = bool(use_fusion_layer_lora)
+        self.encoder_lora_targets = tuple(encoder_lora_targets)
+        self.raw_oct_encoder_batch_size = max(int(raw_oct_encoder_batch_size), 1)
+        self.lora_injection_summary: Dict[str, int] = {}
         self.current_epoch = 0
         
         # ============================================================
@@ -843,8 +921,10 @@ class BioCOT_v3_2(nn.Module):
         # ============================================================
         if use_hierarchical:
             self.visual_encoder = HierarchicalViT(
-                model_name="vit_base_patch16_224",
+                model_name=vit_model_name,
                 pretrained=vit_pretrained,
+                checkpoint_path=vit_checkpoint_path,
+                output_dim=embed_dim,
                 out_indices=extract_layers,
                 drop_path_rate=drop_path_rate
             )
@@ -864,6 +944,12 @@ class BioCOT_v3_2(nn.Module):
                     pretrained=colpo_encoder_pretrained,
                     num_classes=0,
                 )
+                if colpo_encoder_checkpoint_path:
+                    matched, skipped = load_matching_vision_weights(self.colpo_encoder, colpo_encoder_checkpoint_path)
+                    print(
+                        f"Loaded colposcopy checkpoint {colpo_encoder_checkpoint_path}: "
+                        f"matched={matched}, skipped={skipped}"
+                    )
                 colpo_dim = getattr(self.colpo_encoder, "num_features", None) or getattr(self.colpo_encoder, "embed_dim", None)
                 if colpo_dim is None:
                     raise ValueError(f"无法从 colpo_encoder={colpo_encoder_name} 推断输出维度")
@@ -1139,6 +1225,29 @@ class BioCOT_v3_2(nn.Module):
             nn.Dropout(dropout_rate * 0.5),
             nn.Linear(embed_dim // 2, num_classes)
         )
+
+        if self.use_oct_encoder_lora and self.visual_encoder is not None:
+            self.lora_injection_summary["oct_encoder"] = inject_lora_into_linear_modules(
+                self.visual_encoder,
+                self.encoder_lora_targets,
+                rank=encoder_lora_rank,
+                alpha=encoder_lora_alpha,
+                dropout=encoder_lora_dropout,
+            )
+        if self.use_colpo_encoder_lora and self.colpo_encoder is not None:
+            self.lora_injection_summary["colpo_encoder"] = inject_lora_into_linear_modules(
+                self.colpo_encoder,
+                self.encoder_lora_targets,
+                rank=encoder_lora_rank,
+                alpha=encoder_lora_alpha,
+                dropout=encoder_lora_dropout,
+            )
+        if self.use_fusion_layer_lora:
+            # nn.MultiheadAttention reads out_proj.weight directly in its
+            # functional path, so wrapping out_proj as a module would be
+            # ignored or break. The explicit Shared-LoRA bridge above provides
+            # the Q/K/V and final-fusion residual path instead.
+            self.lora_injection_summary["fusion_layers"] = 0
         
         # 7. Loss Modules
         if use_ot:
@@ -1147,8 +1256,12 @@ class BioCOT_v3_2(nn.Module):
         if use_dual:
             self.memory_bank = NoiseMemoryBank(num_centers, embed_dim)
             self.consistency_loss = CounterfactualConsistencyLoss()
-            self.adversarial_loss = AdversarialLoss(max(num_centers, 2))
-            self.center_discriminator = CenterDiscriminator(embed_dim, max(num_centers, 2))
+            if use_adversarial:
+                self.adversarial_loss = AdversarialLoss(max(num_centers, 2))
+                self.center_discriminator = CenterDiscriminator(embed_dim, max(num_centers, 2))
+            else:
+                self.adversarial_loss = None
+                self.center_discriminator = None
             
         # [CRITICAL FIX] 统一初始化权重
         self.apply(self._init_weights)
@@ -1193,6 +1306,10 @@ class BioCOT_v3_2(nn.Module):
             if module is not None:
                 for param in module.parameters():
                     param.requires_grad = True
+
+        for name, param in self.named_parameters():
+            if ".lora_" in name or name.startswith("lora_"):
+                param.requires_grad = True
 
     def trainable_parameter_summary(self) -> Dict[str, object]:
         rows = []
@@ -1242,6 +1359,33 @@ class BioCOT_v3_2(nn.Module):
             return f_colpo
         return self.colpo_encoder_projector(encoded)
 
+    def encode_raw_oct_hierarchical(self, f_oct: torch.Tensor) -> List[torch.Tensor]:
+        """Encode raw OCT images or frame stacks with the hierarchical ViT."""
+        if self.visual_encoder is None:
+            raise RuntimeError("encode_raw_oct_hierarchical requires visual_encoder.")
+        if f_oct.dim() == 4:
+            return self.visual_encoder(f_oct)
+        if f_oct.dim() != 5:
+            raise ValueError(f"Expected raw OCT tensor with 4D or 5D shape, got {tuple(f_oct.shape)}")
+
+        batch_size, num_frames = f_oct.shape[:2]
+        flat = f_oct.reshape(batch_size * num_frames, *f_oct.shape[2:])
+        stage_chunks: Optional[List[List[torch.Tensor]]] = None
+        chunk_size = max(int(self.raw_oct_encoder_batch_size), 1)
+        for start in range(0, flat.shape[0], chunk_size):
+            stage_feats = self.visual_encoder(flat[start:start + chunk_size])
+            if stage_chunks is None:
+                stage_chunks = [[] for _ in stage_feats]
+            for idx, feat in enumerate(stage_feats):
+                stage_chunks[idx].append(feat)
+        assert stage_chunks is not None
+        outputs: List[torch.Tensor] = []
+        for chunks in stage_chunks:
+            stage = torch.cat(chunks, dim=0)
+            stage = stage.reshape(batch_size, num_frames, stage.shape[1], stage.shape[2]).mean(dim=1)
+            outputs.append(stage)
+        return outputs
+
     def forward(
         self,
         f_oct: torch.Tensor,     # [B, N, D] 或 [B, C, H, W]（如果使用分层）
@@ -1288,12 +1432,9 @@ class BioCOT_v3_2(nn.Module):
             raise ValueError(f"image_names长度({len(image_names)})与batch大小({B})不匹配！")
         
         # 🔥 5.0优势：分层多尺度特征提取
-        if self.use_hierarchical and self.visual_encoder is not None and len(f_oct.shape) == 4:
-            # 使用原始图像，通过HierarchicalViT提取分层特征
-            # 合并OCT和Colposcopy（简单平均或拼接）
-            # 这里假设f_oct是主要模态，f_colpo作为辅助
-            images = f_oct  # [B, C, H, W]
-            vis_feats_list = self.visual_encoder(images)  # List of [B, N, D]
+        if self.use_hierarchical and self.visual_encoder is not None and f_oct.dim() in (4, 5):
+            # 使用原始OCT图像或OCT帧栈，通过HierarchicalViT提取分层特征。
+            vis_feats_list = self.encode_raw_oct_hierarchical(f_oct)  # List of [B, N, D]
             
             # 初始化临床状态
             if clinical_features is not None:
@@ -1702,8 +1843,9 @@ class BioCOT_v3_2(nn.Module):
             # 6.4 Consistency Loss
             if self.use_dual and center_labels is not None:
                 if z_noise is not None:
-                    c_logits = self.center_discriminator(z_noise)
-                    loss_dict['L_adv'] = self.adversarial_loss(c_logits, center_labels)
+                    if self.use_adversarial and self.center_discriminator is not None:
+                        c_logits = self.center_discriminator(z_noise)
+                        loss_dict['L_adv'] = self.adversarial_loss(c_logits, center_labels)
 
                     self.memory_bank.update(z_noise, center_labels)
 
@@ -1732,6 +1874,26 @@ class BioCOT_v3_2(nn.Module):
             
         return output
 
+
+def _load_shape_compatible_state_dict(
+    model: nn.Module,
+    state: dict,
+) -> tuple[list[str], list[str], list[str]]:
+    """Load checkpoint keys only when tensor shapes match the target model."""
+    model_state = model.state_dict()
+    matched: dict[str, torch.Tensor] = {}
+    skipped_shape: list[str] = []
+    for key, value in state.items():
+        if key not in model_state:
+            continue
+        if tuple(model_state[key].shape) != tuple(value.shape):
+            skipped_shape.append(key)
+            continue
+        matched[key] = value
+    missing, unexpected = model.load_state_dict(matched, strict=False)
+    return missing, unexpected, skipped_shape
+
+
 def create_bio_cot_v3_2(config):
     """Factory function to create BioCOT_v3_2 model (整合5.0优势)"""
     # Current main experiment disables VLM evidence cache by default.
@@ -1750,14 +1912,18 @@ def create_bio_cot_v3_2(config):
         use_visual_notes=config.use_visual_notes,
         use_ot=config.use_ot,
         use_dual=config.use_dual,
+        use_adversarial=getattr(config, 'use_adversarial', False),
         use_cross_attn=config.use_cross_attn,
         use_adaptive_gating=getattr(config, 'use_adaptive_gating', True),
         warmup_epochs=config.warmup_epochs,
         hidden_dim=getattr(config, 'hidden_dim', 768),
         # 🔥 5.0新增参数
         use_hierarchical=getattr(config, 'use_hierarchical', True),
+        vit_model_name=getattr(config, 'vit_model_name', "vit_base_patch16_224"),
+        vit_checkpoint_path=getattr(config, 'vit_checkpoint_path', None),
         extract_layers=getattr(config, 'extract_layers', (2, 5, 8, 11)),
         vit_pretrained=getattr(config, 'vit_pretrained', True),
+        raw_oct_encoder_batch_size=getattr(config, 'raw_oct_encoder_batch_size', 8),
         drop_path_rate=getattr(config, 'drop_path_rate', 0.2),
         dropout_rate=getattr(config, 'dropout_rate', 0.4),
         use_noise_aware=getattr(config, 'use_noise_aware', True),
@@ -1789,6 +1955,7 @@ def create_bio_cot_v3_2(config):
         asccp_text_local_files_only=getattr(config, 'asccp_text_local_files_only', True),
         enable_colpo_encoder=getattr(config, 'enable_colpo_encoder', False),
         colpo_encoder_name=getattr(config, 'colpo_encoder_name', "vit_base_patch16_224"),
+        colpo_encoder_checkpoint_path=getattr(config, 'colpo_encoder_checkpoint_path', None),
         colpo_encoder_pretrained=getattr(config, 'colpo_encoder_pretrained', True),
         train_colpo_encoder=getattr(config, 'train_colpo_encoder', False),
         use_colpo_lora_bridge=getattr(config, 'use_colpo_lora_bridge', False),
@@ -1796,6 +1963,13 @@ def create_bio_cot_v3_2(config):
         shared_lora_alpha=getattr(config, 'shared_lora_alpha', 16.0),
         shared_lora_dropout=getattr(config, 'shared_lora_dropout', 0.1),
         colpo_bridge_ot_weight=getattr(config, 'colpo_bridge_ot_weight', 1.0),
+        use_oct_encoder_lora=getattr(config, 'use_oct_encoder_lora', False),
+        use_colpo_encoder_lora=getattr(config, 'use_colpo_encoder_lora', False),
+        use_fusion_layer_lora=getattr(config, 'use_fusion_layer_lora', False),
+        encoder_lora_rank=getattr(config, 'encoder_lora_rank', 8),
+        encoder_lora_alpha=getattr(config, 'encoder_lora_alpha', 16.0),
+        encoder_lora_dropout=getattr(config, 'encoder_lora_dropout', 0.05),
+        encoder_lora_targets=getattr(config, 'encoder_lora_targets', ("attn.qkv", "attn.proj")),
     )
     # Set legacy retriever flag. Main no-report configs keep this False.
     model.use_vlm_retriever = use_vlm_retriever
@@ -1805,11 +1979,16 @@ def create_bio_cot_v3_2(config):
         if ckpt_path.exists():
             payload = torch.load(ckpt_path, map_location='cpu')
             state = payload.get('model_state_dict', payload) if isinstance(payload, dict) else payload
-            missing, unexpected = model.load_state_dict(state, strict=False)
+            missing, unexpected, skipped_shape = _load_shape_compatible_state_dict(model, state)
             print(
                 f"✅ Loaded expert base checkpoint from {ckpt_path} "
-                f"(missing={len(missing)}, unexpected={len(unexpected)})"
+                f"(missing={len(missing)}, unexpected={len(unexpected)}, "
+                f"skipped_shape={len(skipped_shape)})"
             )
+            if skipped_shape:
+                preview = ", ".join(skipped_shape[:5])
+                suffix = "..." if len(skipped_shape) > 5 else ""
+                print(f"   skipped shape-mismatch keys: {preview}{suffix}")
         else:
             print(f"⚠️ Expert base checkpoint not found: {ckpt_path}")
     if getattr(config, 'freeze_expert_base_for_lora', False):

@@ -87,7 +87,45 @@ def old_format_rows(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def build_loco_splits(manifest_path: Path, data_lock_path: Path, split_root: Path) -> pd.DataFrame:
+def _choose_hard_validation_center(source_pool: pd.DataFrame) -> tuple[str, pd.DataFrame]:
+    rows = []
+    for center_name in sorted(source_pool["center_name"].dropna().astype(str).unique()):
+        val_part = source_pool[source_pool["center_name"].astype(str).eq(center_name)]
+        train_part = source_pool[~source_pool["center_name"].astype(str).eq(center_name)]
+        if len(val_part) == 0 or len(train_part) == 0:
+            continue
+        val_rate = float(val_part["pathology_cin2plus"].mean())
+        train_rate = float(train_part["pathology_cin2plus"].mean())
+        has_both_classes = bool(val_part["pathology_cin2plus"].astype(int).nunique() == 2)
+        support_penalty = 1.0 / max(len(val_part), 1)
+        rows.append(
+            {
+                "candidate_val_center": center_name,
+                "n_val": len(val_part),
+                "n_train": len(train_part),
+                "val_cin2plus_rate": val_rate,
+                "train_cin2plus_rate": train_rate,
+                "prevalence_gap": abs(val_rate - train_rate),
+                "has_both_cin2_classes": has_both_classes,
+                "score": abs(val_rate - train_rate) - 0.25 * support_penalty,
+            }
+        )
+    candidates = pd.DataFrame(rows)
+    if candidates.empty:
+        raise ValueError("Cannot choose hard validation center: no valid source-center candidates.")
+    selectable = candidates[candidates["has_both_cin2_classes"]].copy()
+    if selectable.empty:
+        selectable = candidates.copy()
+    chosen = selectable.sort_values(["score", "n_val"], ascending=[False, False]).iloc[0]
+    return str(chosen["candidate_val_center"]), candidates
+
+
+def build_loco_splits(
+    manifest_path: Path,
+    data_lock_path: Path,
+    split_root: Path,
+    validation_policy: str = "manifest",
+) -> pd.DataFrame:
     manifest = read_csv(manifest_path)
     data_lock = read_csv(data_lock_path)
     keep_cols = [
@@ -121,12 +159,33 @@ def build_loco_splits(manifest_path: Path, data_lock_path: Path, split_root: Pat
         "validation": "val_labels.csv",
         "test": "external_test_labels.csv",
     }
+    audit_rows = []
+    hard_candidate_rows = []
     for fold_id, fold_df in merged.groupby("fold_id", sort=True):
         fold_dir = split_root / safe_name(fold_id)
         fold_dir.mkdir(parents=True, exist_ok=True)
         held_out = sorted(fold_df.loc[fold_df["split_role"].eq("test"), "center_name"].unique())
+        hard_val_center = ""
+        if validation_policy == "hard-center":
+            test_df = fold_df[fold_df["split_role"].eq("test")].copy()
+            source_pool = fold_df[~fold_df["split_role"].eq("test")].copy()
+            hard_val_center, candidates = _choose_hard_validation_center(source_pool)
+            candidates.insert(0, "fold_id", fold_id)
+            candidates.insert(1, "held_out_center", ";".join(held_out))
+            hard_candidate_rows.extend(candidates.to_dict("records"))
+            raw_parts = {
+                "train": source_pool[~source_pool["center_name"].astype(str).eq(hard_val_center)].copy(),
+                "validation": source_pool[source_pool["center_name"].astype(str).eq(hard_val_center)].copy(),
+                "test": test_df,
+            }
+        elif validation_policy == "manifest":
+            raw_parts = {role: fold_df[fold_df["split_role"].eq(role)].copy() for role in role_to_file}
+        else:
+            raise ValueError(f"Unsupported validation_policy={validation_policy}")
+
         for role, file_name in role_to_file.items():
-            part = old_format_rows(fold_df[fold_df["split_role"].eq(role)].copy())
+            raw_part = raw_parts[role]
+            part = old_format_rows(raw_part.copy())
             out_path = fold_dir / file_name
             part.to_csv(out_path, index=False, encoding="utf-8-sig")
             rows.append(
@@ -134,14 +193,58 @@ def build_loco_splits(manifest_path: Path, data_lock_path: Path, split_root: Pat
                     "fold_id": fold_id,
                     "held_out_center": ";".join(held_out),
                     "split_role": role,
+                    "validation_policy": validation_policy,
+                    "hard_val_center": hard_val_center,
                     "n": len(part),
                     "cin2plus_rate": float(part["pathology_cin2plus"].mean()) if len(part) else np.nan,
                     "cin3plus_rate": float(part["pathology_cin3plus"].mean()) if len(part) else np.nan,
                     "csv": str(out_path.relative_to(EXP_ROOT)),
                 }
             )
+            for center_name, center_df in raw_part.groupby("center_name", sort=True):
+                y = center_df["pathology_cin2plus"].astype(int)
+                audit_rows.append(
+                    {
+                        "fold_id": fold_id,
+                        "held_out_center": ";".join(held_out),
+                        "split_role": role,
+                        "validation_policy": validation_policy,
+                        "hard_val_center": hard_val_center,
+                        "center_name": center_name,
+                        "n": len(center_df),
+                        "cin2plus_rate": float(y.mean()) if len(y) else np.nan,
+                        "cin3plus_rate": float(center_df["pathology_cin3plus"].astype(int).mean()) if len(center_df) else np.nan,
+                        "has_both_cin2_classes": bool(y.nunique() == 2),
+                    }
+                )
     manifest_out = pd.DataFrame(rows)
     manifest_out.to_csv(split_root / "formal_loco_split_manifest.csv", index=False, encoding="utf-8-sig")
+    audit = pd.DataFrame(audit_rows)
+    audit.to_csv(split_root / "formal_loco_split_audit.csv", index=False, encoding="utf-8-sig")
+    if hard_candidate_rows:
+        pd.DataFrame(hard_candidate_rows).to_csv(split_root / "hard_center_validation_candidates.csv", index=False, encoding="utf-8-sig")
+    warnings = audit[~audit["has_both_cin2_classes"]].copy()
+    report = [
+        "# Formal LOCO Split Audit",
+        "",
+        f"validation_policy: `{validation_policy}`",
+        "",
+        "## Split Manifest",
+        "",
+        manifest_out.to_markdown(index=False),
+        "",
+        "## Per-Centre Label Support Warnings",
+        "",
+        warnings.to_markdown(index=False) if len(warnings) else "No single-class centre partitions detected.",
+        "",
+        "## Output Files",
+        "",
+        f"- split manifest: `{(split_root / 'formal_loco_split_manifest.csv').relative_to(EXP_ROOT)}`",
+        f"- split audit: `{(split_root / 'formal_loco_split_audit.csv').relative_to(EXP_ROOT)}`",
+    ]
+    if hard_candidate_rows:
+        report.append(f"- hard-centre candidates: `{(split_root / 'hard_center_validation_candidates.csv').relative_to(EXP_ROOT)}`")
+    (split_root / "formal_loco_split_audit.md").write_text("\n".join(report) + "\n", encoding="utf-8")
     return manifest_out
 
 
@@ -270,12 +373,34 @@ def write_config(
     pretrain_without_colpo: bool,
     load_expert_checkpoint: Path | None = None,
     colpo_pretrained: bool = True,
+    pass_raw_oct_to_model: bool = False,
+    use_hierarchical: bool = False,
+    vit_pretrained: bool = False,
+    vit_model_name: str = "vit_base_patch16_224",
+    vit_checkpoint_path: str | None = None,
+    colpo_encoder_name: str = "vit_base_patch16_224",
+    colpo_encoder_checkpoint_path: str | None = None,
+    use_oct_encoder_lora: bool = False,
+    use_colpo_encoder_lora: bool = False,
+    use_fusion_layer_lora: bool = False,
+    encoder_lora_rank: int = 8,
 ) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    use_hierarchical = bool(use_hierarchical or pass_raw_oct_to_model)
     load_line = (
         f"    load_expert_base_checkpoint_path: str = r\"{load_expert_checkpoint}\"\n"
         if load_expert_checkpoint
         else "    load_expert_base_checkpoint_path = None\n"
+    )
+    vit_ckpt_line = (
+        f"    vit_checkpoint_path: str = r\"{vit_checkpoint_path}\"\n"
+        if vit_checkpoint_path
+        else "    vit_checkpoint_path = None\n"
+    )
+    colpo_ckpt_line = (
+        f"    colpo_encoder_checkpoint_path: str = r\"{colpo_encoder_checkpoint_path}\"\n"
+        if colpo_encoder_checkpoint_path
+        else "    colpo_encoder_checkpoint_path = None\n"
     )
     config_path.write_text(
         f'''#!/usr/bin/env python3
@@ -298,6 +423,11 @@ class SharedLoRAFormalConfig(SharedLoRALOCOConfig):
     vit_batch_size: int = {int(vit_batch_size)}
     oct_frames: int = 8
     colposcopy_images: int = 3
+    use_hierarchical: bool = {bool(use_hierarchical)}
+    pass_raw_oct_to_model: bool = {bool(pass_raw_oct_to_model)}
+    vit_model_name: str = "{vit_model_name}"
+    vit_pretrained: bool = {bool(vit_pretrained)}
+{vit_ckpt_line}    raw_oct_encoder_batch_size: int = {int(vit_batch_size)}
     center_balanced_sampling: bool = True
     checkpoint_metric: str = "auc_minus_ece"
     ece_penalty: float = 0.15
@@ -306,7 +436,15 @@ class SharedLoRAFormalConfig(SharedLoRALOCOConfig):
     pretrain_without_colpo: bool = {bool(pretrain_without_colpo)}
     pass_raw_colpo_to_model: bool = {not bool(pretrain_without_colpo)}
     enable_colpo_encoder: bool = {not bool(pretrain_without_colpo)}
+    colpo_encoder_name: str = "{colpo_encoder_name}"
     colpo_encoder_pretrained: bool = {bool(colpo_pretrained)}
+{colpo_ckpt_line}    use_oct_encoder_lora: bool = {bool(use_oct_encoder_lora)}
+    use_colpo_encoder_lora: bool = {bool(use_colpo_encoder_lora)}
+    use_fusion_layer_lora: bool = {bool(use_fusion_layer_lora)}
+    encoder_lora_rank: int = {int(encoder_lora_rank)}
+    encoder_lora_alpha: float = {float(encoder_lora_rank) * 2.0}
+    encoder_lora_dropout: float = 0.05
+    encoder_lora_targets: tuple = ("attn.qkv", "attn.proj")
     train_colpo_encoder: bool = False
     freeze_expert_base_for_lora: bool = {not bool(pretrain_without_colpo)}
     freeze_colpo_encoder_for_lora: bool = True
@@ -316,6 +454,8 @@ class SharedLoRAFormalConfig(SharedLoRALOCOConfig):
     shared_lora_dropout: float = 0.05
     lambda_colpo_bridge_ot: float = 0.2
     lambda_colpo_bridge_align: float = 0.05
+    use_adversarial: bool = False
+    lambda_adv: float = 0.0
 ''',
         encoding="utf-8",
     )
@@ -387,6 +527,19 @@ def threshold_for_sensitivity(y_true: np.ndarray, y_prob: np.ndarray, target: fl
     return float(np.min(positives))
 
 
+def target_free_logit_median_match(source_prob: Iterable[float], target_prob: Iterable[float]) -> tuple[np.ndarray, float]:
+    """Unlabeled target calibration: match target median logit to source validation median logit."""
+    source_arr = np.clip(np.asarray(list(source_prob), dtype=float), 1e-6, 1.0 - 1e-6)
+    target_arr = np.clip(np.asarray(list(target_prob), dtype=float), 1e-6, 1.0 - 1e-6)
+    if source_arr.size == 0 or target_arr.size == 0:
+        return target_arr, 0.0
+    source_logit = np.log(source_arr / (1.0 - source_arr))
+    target_logit = np.log(target_arr / (1.0 - target_arr))
+    shift = float(np.median(source_logit) - np.median(target_logit))
+    calibrated = 1.0 / (1.0 + np.exp(-(target_logit + shift)))
+    return calibrated, shift
+
+
 def binary_metrics(y_true: Iterable[int], y_prob: Iterable[float], threshold: float) -> dict[str, float]:
     from sklearn.metrics import average_precision_score, roc_auc_score
 
@@ -445,16 +598,29 @@ def aggregate_results(out_root: Path, fold_rows: list[dict[str, object]]) -> Non
             val["y_prob"].to_numpy(),
             target=0.95,
         )
+        test["y_prob_target_free_calibrated"], target_free_shift = target_free_logit_median_match(
+            val["y_prob"].to_numpy(),
+            test["y_prob"].to_numpy(),
+        )
         cin2 = binary_metrics(test["y_true"], test["y_prob"], thr_cin2)
         cin3 = binary_metrics(test["pathology_cin3plus"].fillna(0).astype(int), test["y_prob"], thr_cin3)
+        cin2_tfc = binary_metrics(test["y_true"], test["y_prob_target_free_calibrated"], thr_cin2)
+        cin3_tfc = binary_metrics(
+            test["pathology_cin3plus"].fillna(0).astype(int),
+            test["y_prob_target_free_calibrated"],
+            thr_cin3,
+        )
         row = {
             "fold_id": fold_id,
             "held_out_center": fold["held_out_center"],
             "n_test": len(test),
             "cin2plus_prevalence": float(test["y_true"].mean()),
             "cin3plus_prevalence": float(test["pathology_cin3plus"].fillna(0).mean()),
+            "target_free_logit_shift": target_free_shift,
             **{f"cin2plus_{k}": v for k, v in cin2.items()},
             **{f"cin3plus_{k}": v for k, v in cin3.items()},
+            **{f"cin2plus_tfc_{k}": v for k, v in cin2_tfc.items()},
+            **{f"cin3plus_tfc_{k}": v for k, v in cin3_tfc.items()},
             "checkpoint": fold["checkpoint"],
             "train_log": fold["train_log"],
             "val_predictions": str(val_path.relative_to(EXP_ROOT)),
@@ -576,11 +742,26 @@ def main() -> None:
     parser.add_argument("--expert-checkpoint", default=None)
     parser.add_argument("--skip-train", action="store_true")
     parser.add_argument("--skip-eval", action="store_true")
+    parser.add_argument("--prepare-only", action="store_true", help="Build/audit splits and exit before training.")
     parser.add_argument("--fold", action="append", default=None, help="Optional fold_id subset.")
     parser.add_argument("--colpo-pretrained", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--validation-policy", choices=["manifest", "hard-center"], default="manifest")
+    parser.add_argument("--pass-raw-oct-to-model", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--use-hierarchical", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--vit-pretrained", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--vit-model-name", default="vit_base_patch16_224")
+    parser.add_argument("--vit-checkpoint-path", default=None)
+    parser.add_argument("--colpo-encoder-name", default=None)
+    parser.add_argument("--colpo-encoder-checkpoint-path", default=None)
+    parser.add_argument("--use-oct-encoder-lora", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--use-colpo-encoder-lora", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--use-fusion-layer-lora", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--encoder-lora-rank", type=int, default=8)
     args = parser.parse_args()
 
     out_root = Path(args.out_root)
+    if not out_root.is_absolute():
+        out_root = EXP_ROOT / out_root
     split_root = out_root / "splits"
     config_root = out_root / "configs"
     logs_root = out_root / "logs"
@@ -594,8 +775,16 @@ def main() -> None:
     env.setdefault("TOKENIZERS_PARALLELISM", "false")
 
     print("Building formal LOCO splits...")
-    split_manifest = build_loco_splits(Path(args.manifest), Path(args.data_lock), split_root / "loco")
+    split_manifest = build_loco_splits(
+        Path(args.manifest),
+        Path(args.data_lock),
+        split_root / "loco",
+        validation_policy=args.validation_policy,
+    )
     print(split_manifest.to_string(index=False))
+    if args.prepare_only:
+        print(f"Prepared splits and audit files under {split_root / 'loco'}")
+        return
 
     expert_checkpoint = Path(args.expert_checkpoint) if args.expert_checkpoint else None
     if not args.skip_pretrain and expert_checkpoint is None:
@@ -616,6 +805,17 @@ def main() -> None:
             pretrain_without_colpo=True,
             load_expert_checkpoint=None,
             colpo_pretrained=False,
+            pass_raw_oct_to_model=args.pass_raw_oct_to_model,
+            use_hierarchical=args.use_hierarchical,
+            vit_pretrained=args.vit_pretrained,
+            vit_model_name=args.vit_model_name,
+            vit_checkpoint_path=args.vit_checkpoint_path,
+            colpo_encoder_name=args.colpo_encoder_name or args.vit_model_name,
+            colpo_encoder_checkpoint_path=None,
+            use_oct_encoder_lora=args.use_oct_encoder_lora,
+            use_colpo_encoder_lora=False,
+            use_fusion_layer_lora=args.use_fusion_layer_lora,
+            encoder_lora_rank=args.encoder_lora_rank,
         )
         if not args.skip_train:
             run_command(
@@ -660,6 +860,17 @@ def main() -> None:
             pretrain_without_colpo=False,
             load_expert_checkpoint=expert_checkpoint,
             colpo_pretrained=args.colpo_pretrained,
+            pass_raw_oct_to_model=args.pass_raw_oct_to_model,
+            use_hierarchical=args.use_hierarchical,
+            vit_pretrained=args.vit_pretrained,
+            vit_model_name=args.vit_model_name,
+            vit_checkpoint_path=args.vit_checkpoint_path,
+            colpo_encoder_name=args.colpo_encoder_name or args.vit_model_name,
+            colpo_encoder_checkpoint_path=args.colpo_encoder_checkpoint_path,
+            use_oct_encoder_lora=args.use_oct_encoder_lora,
+            use_colpo_encoder_lora=args.use_colpo_encoder_lora,
+            use_fusion_layer_lora=args.use_fusion_layer_lora,
+            encoder_lora_rank=args.encoder_lora_rank,
         )
         train_log = logs_root / f"{fold_safe}_train.log"
         if not args.skip_train:

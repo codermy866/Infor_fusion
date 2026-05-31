@@ -174,13 +174,29 @@ def patch_features(
     device: torch.device,
     vit_batch_size: int,
     pretrained: bool = False,
+    model_name: str = "vit_base_patch16_224",
+    checkpoint_path: str | None = None,
 ) -> torch.Tensor:
     if len(images.shape) == 5:
         batch, frames = images.shape[:2]
         flat = images.view(batch * frames, *images.shape[2:])
-        feats = extract_patch_features_with_vit(flat, device, batch_size=vit_batch_size, pretrained=pretrained)
+        feats = extract_patch_features_with_vit(
+            flat,
+            device,
+            batch_size=vit_batch_size,
+            pretrained=pretrained,
+            model_name=model_name,
+            checkpoint_path=checkpoint_path,
+        )
         return feats.view(batch, frames, 196, 768).mean(dim=1)
-    return extract_patch_features_with_vit(images, device, batch_size=vit_batch_size, pretrained=pretrained)
+    return extract_patch_features_with_vit(
+        images,
+        device,
+        batch_size=vit_batch_size,
+        pretrained=pretrained,
+        model_name=model_name,
+        checkpoint_path=checkpoint_path,
+    )
 
 
 def normalize_string_list(values: object) -> List[str]:
@@ -507,20 +523,26 @@ def main() -> None:
             batch_size = labels.shape[0]
 
             pretrain_without_colpo = bool(getattr(config, "pretrain_without_colpo", False))
+            pass_raw_oct_to_model = bool(getattr(config, "pass_raw_oct_to_model", False))
             pass_raw_colpo_to_model = bool(getattr(config, "pass_raw_colpo_to_model", False))
 
-            if "oct_patch_features" in batch and "colpo_patch_features" in batch:
+            if "oct_patch_features" in batch and "colpo_patch_features" in batch and not pass_raw_oct_to_model:
                 oct_feats = batch["oct_patch_features"].to(device, non_blocking=True).float()
                 col_feats = None if pretrain_without_colpo else batch["colpo_patch_features"].to(device, non_blocking=True).float()
             else:
                 oct_images = batch["oct_images"].to(device, non_blocking=True)
                 colposcopy_images = batch["colposcopy_images"].to(device, non_blocking=True)
-                oct_feats = patch_features(
-                    oct_images,
-                    device,
-                    config.vit_batch_size,
-                    pretrained=getattr(config, "vit_pretrained", False),
-                )
+                if pass_raw_oct_to_model:
+                    oct_feats = oct_images.float()
+                else:
+                    oct_feats = patch_features(
+                        oct_images,
+                        device,
+                        config.vit_batch_size,
+                        pretrained=getattr(config, "vit_pretrained", False),
+                        model_name=getattr(config, "vit_model_name", "vit_base_patch16_224"),
+                        checkpoint_path=getattr(config, "vit_checkpoint_path", None),
+                    )
                 if pretrain_without_colpo:
                     col_feats = None
                 elif pass_raw_colpo_to_model:
@@ -531,6 +553,8 @@ def main() -> None:
                         device,
                         config.vit_batch_size,
                         pretrained=getattr(config, "vit_pretrained", False),
+                        model_name=getattr(config, "vit_model_name", "vit_base_patch16_224"),
+                        checkpoint_path=getattr(config, "vit_checkpoint_path", None),
                     )
             clinical_features = clinical_features_from_batch(
                 batch,

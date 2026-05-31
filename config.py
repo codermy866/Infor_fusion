@@ -9,7 +9,7 @@ not used in the main experiment.
 
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 
 @dataclass
@@ -46,19 +46,20 @@ class BioCOT_v3_2_Config:
     
     # Bio-COT核心配置
     use_ot: bool = True
-    use_dual: bool = True
-    use_cross_attn: bool = True
+    use_dual: bool = False
+    use_adversarial: bool = False  # 1897 LOCO ablation g1: L_adv 有害 (AUC 0.667 vs 0.638)
+    use_cross_attn: bool = False
     use_adaptive_gating: bool = True  # 3.1的优势：自适应模态门控
     use_vlm_retriever: bool = False  # current main experiment uses no VLM evidence cache
-    use_variational_reliability: bool = True
-    use_center_aware_reliability: bool = True
+    use_variational_reliability: bool = False
+    use_center_aware_reliability: bool = False
     fusion_strategy: str = "gated"  # gated/equal/concat/late/cross_attention/variational
     direct_fusion_only: bool = False
-    use_posterior_refinement: bool = True
+    use_posterior_refinement: bool = False
     use_asccp_prior: bool = True
-    use_modality_likelihood: bool = True
-    use_coe_readout: bool = True
-    use_coe_supervision: bool = True
+    use_modality_likelihood: bool = False
+    use_coe_readout: bool = False
+    use_coe_supervision: bool = False
     use_text_derived_asccp: bool = True
     asccp_prototype_path: str = 'paper_revision/method_assets/asccp_prototypes.json'
     guideline_prototype_path: str = 'paper_revision/configs/guideline_clinical_prototypes.json'
@@ -71,9 +72,11 @@ class BioCOT_v3_2_Config:
     # these disabled. Downstream LOCO adaptation enables the independent colpo
     # encoder and freezes the OCT+Text expert base.
     pretrain_without_colpo: bool = False
+    pass_raw_oct_to_model: bool = False
     pass_raw_colpo_to_model: bool = False
     enable_colpo_encoder: bool = False
     colpo_encoder_name: str = "vit_base_patch16_224"
+    colpo_encoder_checkpoint_path: Optional[str] = None
     colpo_encoder_pretrained: bool = True
     train_colpo_encoder: bool = False
     freeze_expert_base_for_lora: bool = False
@@ -84,15 +87,22 @@ class BioCOT_v3_2_Config:
     shared_lora_alpha: float = 16.0
     shared_lora_dropout: float = 0.1
     colpo_bridge_ot_weight: float = 1.0
-    lambda_colpo_bridge_ot: float = 0.2
-    lambda_colpo_bridge_align: float = 0.05
+    lambda_colpo_bridge_ot: float = 0.0
+    lambda_colpo_bridge_align: float = 0.0
+    use_oct_encoder_lora: bool = False
+    use_colpo_encoder_lora: bool = False
+    use_fusion_layer_lora: bool = False
+    encoder_lora_rank: int = 8
+    encoder_lora_alpha: float = 16.0
+    encoder_lora_dropout: float = 0.05
+    encoder_lora_targets: Tuple[str, ...] = ("attn.qkv", "attn.proj")
 
     # 损失权重（3.1的优势：显式对齐）
     lambda_cls: float = 2.0      # 分类损失权重
     lambda_ot: float = 0.5       # Optimal Transport损失权重
-    lambda_align: float = 0.5    # 🔥 对齐损失权重（3.1的优势：显式对齐）
-    lambda_consist: float = 0.2  # 一致性损失权重
-    lambda_adv: float = 0.5      # 对抗损失权重
+    lambda_align: float = 0.0    # 🔥 对齐损失权重（3.1的优势：显式对齐）
+    lambda_consist: float = 0.0  # 一致性损失权重
+    lambda_adv: float = 0.0      # 1897 ablation: 对抗损失拉低 LOCO AUC，默认关闭
     lambda_sparse: float = 0.05  # 注意力稀疏损失权重
     sparse_lower_bound: float = 0.01
     
@@ -105,8 +115,11 @@ class BioCOT_v3_2_Config:
     
     # 🔥 5.0优势：分层多尺度特征提取
     use_hierarchical: bool = True
+    vit_model_name: str = "vit_base_patch16_224"
+    vit_checkpoint_path: Optional[str] = None
     extract_layers: tuple = (2, 5, 8, 11)  # 提取的ViT层索引
     vit_pretrained: bool = False  # 离线训练默认关闭HF下载；如本地缓存齐全可改为True
+    raw_oct_encoder_batch_size: int = 8
     
     # 🔥 5.0优势：激进正则化策略
     dropout_rate: float = 0.4  # 从0.2提升到0.4
@@ -127,11 +140,11 @@ class BioCOT_v3_2_Config:
     # 🔥 5.0优势：正交损失权重
     lambda_ortho: float = 0.5  # 正交损失权重
     lambda_noise: float = 0.1  # 噪声正则化损失权重
-    lambda_reliability_kl: float = 0.01
-    lambda_posterior_smooth: float = 0.01
+    lambda_reliability_kl: float = 0.0
+    lambda_posterior_smooth: float = 0.0
     lambda_asccp_ot: float = 0.05
-    lambda_modality_likelihood: float = 0.05
-    lambda_coe: float = 0.05
+    lambda_modality_likelihood: float = 0.0
+    lambda_coe: float = 0.0
     
     # 训练配置
     batch_size: int = 4  # 🔧 降低batch size以避免显存溢出

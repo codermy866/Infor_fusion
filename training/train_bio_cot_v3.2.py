@@ -446,8 +446,9 @@ def validate_no_report_cohort_scope(config, train_csv: Path, val_csv: Path, logg
 def get_patch_features_from_batch(batch, device, config, training: bool):
     """Return patient-level OCT/colposcopy patch features from cache or images."""
     pretrain_without_colpo = bool(getattr(config, "pretrain_without_colpo", False))
+    pass_raw_oct_to_model = bool(getattr(config, "pass_raw_oct_to_model", False))
     pass_raw_colpo_to_model = bool(getattr(config, "pass_raw_colpo_to_model", False))
-    if "oct_patch_features" in batch:
+    if "oct_patch_features" in batch and not pass_raw_oct_to_model:
         oct_features_patch = batch["oct_patch_features"].to(device, non_blocking=True).float()
         if pretrain_without_colpo:
             colpo_features_patch = None
@@ -470,24 +471,31 @@ def get_patch_features_from_batch(batch, device, config, training: bool):
         if colposcopy_images is not None:
             colposcopy_images = corrupt_images(colposcopy_images, config, "colposcopy")
 
-    B_oct = oct_images.shape[0]
-    if len(oct_images.shape) == 5:
-        F_oct = oct_images.shape[1]
-        oct_images_flat = oct_images.view(B_oct * F_oct, *oct_images.shape[2:])
-        oct_features_patch = extract_patch_features_with_vit(
-            oct_images_flat,
-            device,
-            batch_size=config.vit_batch_size,
-            pretrained=getattr(config, 'vit_pretrained', False),
-        )
-        oct_features_patch = oct_features_patch.view(B_oct, F_oct, 196, 768).mean(dim=1)
+    if pass_raw_oct_to_model:
+        oct_features_patch = oct_images.float()
     else:
-        oct_features_patch = extract_patch_features_with_vit(
-            oct_images,
-            device,
-            batch_size=config.vit_batch_size,
-            pretrained=getattr(config, 'vit_pretrained', False),
-        )
+        B_oct = oct_images.shape[0]
+        if len(oct_images.shape) == 5:
+            F_oct = oct_images.shape[1]
+            oct_images_flat = oct_images.view(B_oct * F_oct, *oct_images.shape[2:])
+            oct_features_patch = extract_patch_features_with_vit(
+                oct_images_flat,
+                device,
+                batch_size=config.vit_batch_size,
+                pretrained=getattr(config, 'vit_pretrained', False),
+                model_name=getattr(config, 'vit_model_name', "vit_base_patch16_224"),
+                checkpoint_path=getattr(config, 'vit_checkpoint_path', None),
+            )
+            oct_features_patch = oct_features_patch.view(B_oct, F_oct, 196, 768).mean(dim=1)
+        else:
+            oct_features_patch = extract_patch_features_with_vit(
+                oct_images,
+                device,
+                batch_size=config.vit_batch_size,
+                pretrained=getattr(config, 'vit_pretrained', False),
+                model_name=getattr(config, 'vit_model_name', "vit_base_patch16_224"),
+                checkpoint_path=getattr(config, 'vit_checkpoint_path', None),
+            )
 
     if pretrain_without_colpo or colposcopy_images is None:
         return oct_features_patch, None
@@ -504,6 +512,8 @@ def get_patch_features_from_batch(batch, device, config, training: bool):
             device,
             batch_size=config.vit_batch_size,
             pretrained=getattr(config, 'vit_pretrained', False),
+            model_name=getattr(config, 'vit_model_name', "vit_base_patch16_224"),
+            checkpoint_path=getattr(config, 'vit_checkpoint_path', None),
         )
         colpo_features_patch = colpo_features_patch.view(B_colpo, N_colpo, 196, 768).mean(dim=1)
     else:
@@ -512,6 +522,8 @@ def get_patch_features_from_batch(batch, device, config, training: bool):
             device,
             batch_size=config.vit_batch_size,
             pretrained=getattr(config, 'vit_pretrained', False),
+            model_name=getattr(config, 'vit_model_name', "vit_base_patch16_224"),
+            checkpoint_path=getattr(config, 'vit_checkpoint_path', None),
         )
 
     return oct_features_patch, colpo_features_patch
@@ -723,8 +735,13 @@ def train_epoch(
         else:
             consist_losses.append(0.0)
         
-        # 添加对抗损失
-        if config.use_dual and 'L_adv' in outputs.get('loss_components', {}):
+        # 添加对抗损失（1897 ablation: 默认关闭）
+        if (
+            config.use_dual
+            and getattr(config, 'use_adversarial', False)
+            and config.lambda_adv > 0
+            and 'L_adv' in outputs.get('loss_components', {})
+        ):
             L_adv = outputs['loss_components']['L_adv']
             total_loss_batch = total_loss_batch + config.lambda_adv * L_adv
             adv_losses.append(L_adv.item())
