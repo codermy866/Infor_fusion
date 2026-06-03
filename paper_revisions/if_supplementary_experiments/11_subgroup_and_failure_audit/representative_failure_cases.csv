@@ -1,0 +1,51 @@
+﻿patient_id_hash,case_id_hash,center,histology_stratum,y_cin2,y_cin3,score,pred_binary,error_type,failure_mode
+14cc4b8ae3ea1c4d,cbc233901ae52c41,荆州市第一人民医院,CIN0_1_or_benign,0,0,0.99365092013868,1,false_positive,high-risk clinical prior but benign histology
+88c20afbaea057b6,614334db0379fad5,恩施州中心医院,cancer,1,1,0.9885132729611271,1,not_error,not_error
+ceb27bf7b6bee84a,6ec7dc08f7fddbfe,恩施州中心医院,CIN2,1,0,0.9870754259280898,1,not_error,not_error
+165537b5e0dfe761,3a69a79f76218802,荆州市第一人民医院,CIN0_1_or_benign,0,0,0.986870404900493,1,false_positive,high-risk clinical prior but benign histology
+d896cf8fc8a53c41,2b1fb0875adcdf1f,荆州市第一人民医院,CIN0_1_or_benign,0,0,0.9867879734806542,1,false_positive,high-risk clinical prior but benign histology
+73207d5b05d4ee41,d70fb0d789f19545,荆州市第一人民医院,CIN0_1_or_benign,0,0,0.9866520526690188,1,false_positive,high-risk clinical prior but benign histology
+8f4f4282bb3be02f,fd3357f92a7752f7,襄阳市中心医院,cancer,1,1,0.9863923745790288,1,not_error,not_error
+672626cd1ae6321d,97fb2ded8adeec4b,荆州市第一人民医院,CIN0_1_or_benign,0,0,0.9863914271737952,1,false_positive,high-risk clinical prior but benign histology
+809d49acda55ac91,2488eaf499825211,襄阳市中心医院,CIN0_1_or_benign,0,0,0.985947815349148,1,false_positive,unknown false-positive proxy
+39a69c0c1f4c3bb0,26959edca3db9ea4,恩施州中心医院,cancer,1,1,0.9853944405255511,1,not_error,not_error
+1788298dd75ade60,6c95913f55028df0,襄阳市中心医院,CIN0_1_or_benign,0,0,0.9847216050521211,1,false_positive,unknown false-positive proxy
+9c3cc0d4d9db9480,fc28e5f8704d7db6,荆州市第一人民医院,CIN0_1_or_benign,0,0,0.9841912249080409,1,false_positive,high-risk clinical prior but benign histology
+bf3803576be24182,bf4ef710b8e8d29c,襄阳市中心医院,CIN0_1_or_benign,0,0,0.983210843728512,1,false_positive,unknown false-positive proxy
+3ec5c0e212b4ea8d,e72733e17e72daa8,恩施州中心医院,CIN2,1,0,0.9829111348311426,1,not_error,not_error
+115346cf8338b97e,7b36c522096fa714,十堰市人民医院,HSIL_ungraded_as_CIN2,1,0,0.9826270554571279,1,not_error,not_error
+6a10f25d8469ce31,13546b5a6ccb0707,襄阳市中心医院,cancer,1,1,0.9825822010149249,1,not_error,not_error
+a0fa73f680c4542f,46bda204f692e445,恩施州中心医院,CIN3,1,1,0.9824900833932118,1,not_error,not_error
+e60ce972e0e962df,2f49040c798c97e0,恩施州中心医院,CIN0_1_or_benign,0,0,0.9824498320724828,1,false_positive,unknown false-positive proxy
+ac1b9be3168a05e1,82065a1d78d9982f,襄阳市中心医院,CIN0_1_or_benign,0,0,0.9822414647285994,1,false_positive,unknown false-positive proxy
+ebb98175f4aef6a3,cbaabb3259260ebd,武大人民医院,CIN2,1,0,0.9819776219571696,1,not_error,not_error
+39eb14021ac0e6fc,a470a29484c3bc41,恩施州中心医院,cancer,1,1,0.9819402223872972,1,not_error,not_error
+a63c89707e5e660c,550e6d96e7ac5860,荆州市第一人民医院,CIN0_1_or_benign,0,0,0.9812696644527581,1,false_positive,high-risk clinical prior but benign histology
+c5d29dc157b17f80,15af60cb08f81989,襄阳市中心医院,CIN3,1,1,0.9808121541493542,1,not_error,not_error
+844ef9bcc686cc09,a34c6f2a93013f2b,十堰市人民医院,CIN0_1_or_benign,0,0,0.9803712443687012,1,false_positive,unknown false-positive proxy
+b1f70abd4d1eaea6,7152231e8a32f978,武大人民医院,CIN3,1,1,0.979645941424037,1,not_error,not_error
+0c6f125d2505f021,d3256f283754337a,襄阳市中心医院,CIN0_1_or_benign,0,0,0.9796254905638244,1,false_positive,unknown false-positive proxy
+e1a64f73167cdba3,1120fdc40811be3d,荆州市第一人民医院,cancer,1,1,0.9791909093746083,1,not_error,not_error
+b465201939fe8e46,b3d251201be0c164,襄阳市中心医院,CIN3,1,1,0.979115477590492,1,not_error,not_error
+f86dfd45be9db3cf,0517f9e15101e558,襄阳市中心医院,cancer,1,1,0.9788523607915754,1,not_error,not_error
+27f2f9d196c8e78e,54c8c1e4cad361ad,恩施州中心医院,CIN3,1,1,0.9785794686919722,1,not_error,not_error
+2d2b5ea216b3bafd,e93dfa24578ec0c4,恩施州中心医院,CIN2,1,0,0.9778894465633652,1,not_error,not_error
+484a41c2781f412d,b012bf1a19f5959b,襄阳市中心医院,cancer,1,1,0.9773929156467258,1,not_error,not_error
+07db568907a8cf3d,45734afeffb4f28a,十堰市人民医院,HSIL_ungraded_as_CIN2,1,0,0.9771800103940278,1,not_error,not_error
+0da0c75c6b9e1e6b,b83222cba2765aee,武大人民医院,cancer,1,1,0.976965180957472,1,not_error,not_error
+d6d251ce165ac182,84f77347b7470561,襄阳市中心医院,CIN0_1_or_benign,0,0,0.9768624876592062,1,false_positive,unknown false-positive proxy
+5cda90c963d74d8d,22068825820fc2d9,荆州市第一人民医院,CIN0_1_or_benign,0,0,0.9767460205121564,1,false_positive,high-risk clinical prior but benign histology
+a63c89707e5e660c,c46deb2779a6988a,荆州市第一人民医院,CIN0_1_or_benign,0,0,0.9758422766247096,1,false_positive,unknown false-positive proxy
+3eaba36478f81bc7,ba06d7ea17bd8338,恩施州中心医院,CIN0_1_or_benign,0,0,0.974995772139498,1,false_positive,unknown false-positive proxy
+a529928805835b92,e1d976d332934308,恩施州中心医院,CIN3,1,1,0.9747990333641467,1,not_error,not_error
+ac3771e14d08984f,9654bd430b72a984,襄阳市中心医院,cancer,1,1,0.9743943119172652,1,not_error,not_error
+ef83296b59b142c2,aa12a49c0e8fa55f,襄阳市中心医院,cancer,1,1,0.9743142006940315,1,not_error,not_error
+a09d002e85347537,224e34792b0f09d2,襄阳市中心医院,CIN0_1_or_benign,0,0,0.9741376433642184,1,false_positive,unknown false-positive proxy
+5342856db3adc2c4,441fa7ecf704f4fd,武大人民医院,CIN3,1,1,0.9737854144710802,1,not_error,not_error
+14cc4b8ae3ea1c4d,3f78ee33bda0972c,荆州市第一人民医院,CIN0_1_or_benign,0,0,0.9737677514582185,1,false_positive,unknown false-positive proxy
+9c3cc0d4d9db9480,c3468415a58a4599,荆州市第一人民医院,CIN0_1_or_benign,0,0,0.9736171512879327,1,false_positive,high-risk clinical prior but benign histology
+d40d1d8e0c93720a,053f2ef86cd2df2f,荆州市第一人民医院,CIN0_1_or_benign,0,0,0.9726731808389351,1,false_positive,unknown false-positive proxy
+9be6fb35af85c6d2,c2c8017f3cad90f9,襄阳市中心医院,cancer,1,1,0.9724828256411382,1,not_error,not_error
+d3e1e8eb4db23a37,c913823f5950e7ad,荆州市第一人民医院,CIN0_1_or_benign,0,0,0.9723053326812634,1,false_positive,high-risk clinical prior but benign histology
+e93027bd66b15c39,857b0c2ff7bd2aef,襄阳市中心医院,cancer,1,1,0.9714790762875696,1,not_error,not_error
+6ddc22ac8c2bf00d,5fd0aee46f66ba98,襄阳市中心医院,CIN0_1_or_benign,0,0,0.9709907524922781,1,false_positive,unknown false-positive proxy

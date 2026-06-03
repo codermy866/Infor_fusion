@@ -1,0 +1,6 @@
+﻿error_type,failure_mode,n
+false_negative,missing or low-risk clinical prior,193
+false_negative,subtle/high-risk case missed despite clinical prior,41
+false_positive,high-risk clinical prior but benign histology,29
+false_positive,unknown false-positive proxy,195
+not_error,not_error,1439

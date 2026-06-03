@@ -1,0 +1,27 @@
+created_at: 2026-06-03 10:18:40
+python: 3.11.13 (main, Jun  4 2025, 08:57:30) [GCC 9.4.0]
+platform: Linux-5.15.0-139-generic-x86_64-with-glibc2.31
+hostname: user-NF5280M5
+working_directory: /data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026
+numpy: 1.26.4
+pandas: 2.3.0
+matplotlib: 3.8.4
+seaborn: 0.13.2
+sklearn: 1.4.2
+scipy: 1.15.2
+torch: 2.3.1+cu121
+cuda_available: True
+cuda_device_count: 2
+git_hash: 14218853f05cbf2d8937d9c8ccdb4c92090c4a6a
+git_status_short: ?? HyDRA_CoE_No_Report_Execution_Status_Bundle/
+?? configs/if_supplementary_same_backbone_baselines.yaml
+?? final_result/
+?? paper_revision/configs/corrected403_generated/
+?? paper_revision/samples/
+?? paper_revisions/
+?? scripts/figures/
+?? scripts/generate_internal_validation_result_figures.py
+?? scripts/generate_results_section_figures.py
+?? scripts/if_routeb_submission_final/
+?? scripts/if_supplementary/
+?? src/if_supplementary/

@@ -1,0 +1,13 @@
+﻿condition,intervention_type,control_type,n,intervention_logit_available_n,raw_image_intervention_executed,saliency_available,mean_delta_pred_score,status,claim_boundary
+clean_reference,reference,none,1897,1897,False,False,0.0,REFERENCE_ONLY,No CoE faithfulness or causal explanation claim is supported.
+counterfactual_prior_swap,counterfactual_prior,targeted,1897,0,False,False,,NOT_ESTABLISHED,No CoE faithfulness or causal explanation claim is supported.
+random_step_mask_control_1,random_step_mask,random,1897,0,False,False,,NOT_ESTABLISHED,No CoE faithfulness or causal explanation claim is supported.
+random_step_mask_control_2,random_step_mask,random,1897,0,False,False,,NOT_ESTABLISHED,No CoE faithfulness or causal explanation claim is supported.
+random_step_mask_control_3,random_step_mask,random,1897,0,False,False,,NOT_ESTABLISHED,No CoE faithfulness or causal explanation claim is supported.
+random_step_mask_control_4,random_step_mask,random,1897,0,False,False,,NOT_ESTABLISHED,No CoE faithfulness or causal explanation claim is supported.
+random_step_mask_control_5,random_step_mask,random,1897,0,False,False,,NOT_ESTABLISHED,No CoE faithfulness or causal explanation claim is supported.
+targeted_z1_clinical_prior_mask,targeted_step_mask,targeted,1897,0,False,False,,NOT_ESTABLISHED,No CoE faithfulness or causal explanation claim is supported.
+targeted_z2_colposcopy_mask,targeted_step_mask,targeted,1897,0,False,False,,NOT_ESTABLISHED,No CoE faithfulness or causal explanation claim is supported.
+targeted_z3_oct_mask,targeted_step_mask,targeted,1897,0,False,False,,NOT_ESTABLISHED,No CoE faithfulness or causal explanation claim is supported.
+visual_colposcopy_occlusion,visual_occlusion,targeted,1897,0,False,False,,NOT_ESTABLISHED,No CoE faithfulness or causal explanation claim is supported.
+visual_oct_occlusion,visual_occlusion,targeted,1897,0,False,False,,NOT_ESTABLISHED,No CoE faithfulness or causal explanation claim is supported.

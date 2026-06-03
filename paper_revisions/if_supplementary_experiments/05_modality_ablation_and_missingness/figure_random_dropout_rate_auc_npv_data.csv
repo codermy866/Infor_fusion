@@ -1,0 +1,10 @@
+﻿condition,dropout_rate,metric,value
+random_modality_dropout_10,0.1,auroc,0.6314744453563264
+random_modality_dropout_30,0.3,auroc,0.605673255857152
+random_modality_dropout_50,0.5,auroc,0.5910608562908024
+random_modality_dropout_10,0.1,npv,0.8164791541747942
+random_modality_dropout_30,0.3,npv,0.8117907485784162
+random_modality_dropout_50,0.5,npv,0.8104177768457854
+random_modality_dropout_10,0.1,cin3_sensitivity,0.2942408376963351
+random_modality_dropout_30,0.3,cin3_sensitivity,0.26596858638743454
+random_modality_dropout_50,0.5,cin3_sensitivity,0.28272251308900526

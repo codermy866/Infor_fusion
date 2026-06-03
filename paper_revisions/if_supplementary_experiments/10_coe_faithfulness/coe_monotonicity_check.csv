@@ -1,0 +1,2 @@
+﻿check,n_patient_condition_rows,valid_delta_rows,monotonicity_established,status,blocker
+targeted_step_counterfactual_monotonicity,20867,0,False,NOT_EXECUTABLE,Intervened CoE logits are unavailable.

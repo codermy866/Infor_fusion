@@ -1,0 +1,4 @@
+﻿visual_intervention_type,saliency_available,occlusion_prediction_available,raw_image_intervention_executed,status,blocker
+colposcopy_occlusion,False,False,False,NOT_EXECUTABLE,No saved saliency masks or occlusion-inference logits were available in the locked outputs.
+oct_occlusion,False,False,False,NOT_EXECUTABLE,No saved saliency masks or occlusion-inference logits were available in the locked outputs.
+random_visual_mask_control,False,False,False,NOT_EXECUTABLE,Random visual controls require the same unavailable occlusion-inference pipeline.

@@ -1,0 +1,4 @@
+﻿condition,dropout_rate,cin3_false_negatives,cin3_false_negatives_sd
+random_modality_dropout_10,0.1,134.8,4.147288270665544
+random_modality_dropout_30,0.3,140.2,7.596051605933177
+random_modality_dropout_50,0.5,137.0,5.1478150704935

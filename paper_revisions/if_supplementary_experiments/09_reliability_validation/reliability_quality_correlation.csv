@@ -1,0 +1,7 @@
+﻿proxy_quality_variable,reliability_weight,correlation,status
+hpv_missing,alpha_clinical,-0.2567661019202223,proxy_only
+tct_missing,alpha_clinical,-0.18908529143575767,proxy_only
+logvar_oct,alpha_oct,-0.8172589119370791,proxy_uncertainty
+logvar_colposcopy,alpha_colposcopy,-0.7272359122785208,proxy_uncertainty
+logvar_clinical,alpha_clinical,-0.7862023074815243,proxy_uncertainty
+reliability_entropy,prediction_error,0.004980895093511928,internal_diagnostic

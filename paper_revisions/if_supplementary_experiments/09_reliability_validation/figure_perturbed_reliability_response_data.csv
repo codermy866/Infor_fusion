@@ -1,0 +1,11 @@
+﻿condition,target_modality,target_mean_delta_alpha,mean_delta_reliability_entropy
+clinical_hpv_masked,clinical,-0.035037758898943845,-0.017538744644044098
+clinical_hpv_tct_masked,clinical,-0.07447750566799337,-0.04539822808421599
+clinical_tct_masked,clinical,-0.035037758898943845,-0.017538744644044098
+colposcopy_blur,colposcopy,-0.07603979320381038,0.00142854361027422
+colposcopy_brightness_shift,colposcopy,-0.048401738848829694,0.0035214171124194893
+colposcopy_occlusion,colposcopy,-0.12287997741033785,-0.009382126854816838
+oct_gaussian_noise,oct,-0.05986355441051847,0.0018473184356372057
+oct_speckle_noise_mild,oct,-0.03435886672747724,0.0027950664496586243
+oct_speckle_noise_strong,oct,-0.10285482481460709,-0.005905593840611256
+random_modality_dropout_30,random,,-0.08071779898757152

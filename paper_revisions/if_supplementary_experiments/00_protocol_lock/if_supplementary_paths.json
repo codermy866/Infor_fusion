@@ -1,0 +1,32 @@
+{
+  "created_at": "2026-06-02 16:39:49",
+  "root": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026",
+  "paths": {
+    "data_lock": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/outputs/publishable_v2/data_lock/data_lock_n1897.csv",
+    "table1": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/outputs/publishable_v2/tables/table1_cohort_baseline_n1897.csv",
+    "test_predictions": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/outputs/publishable_v2/step2_main_loco/predictions/patient_level_predictions_all_models.csv",
+    "validation_predictions": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/outputs/publishable_v2/step2_main_loco/predictions/validation_predictions_all_models.csv",
+    "hydra_predictions": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/outputs/publishable_v2/step2_main_loco/predictions/patient_level_predictions_hydra_full.csv",
+    "feature_npz": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/outputs/publishable_v2/step2_main_loco/audit/step2_locked_feature_arrays.npz",
+    "loco_folds": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/outputs/publishable_v2/splits/loco_folds_v2.json",
+    "fixed_split": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/outputs/publishable_v2/splits/fixed_external_split_v2.json",
+    "split_manifest": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/outputs/publishable_v2/splits/split_manifest_v2.csv",
+    "missing_modality": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/paper_revision/final_outputs/infofusion_revision_package/05_robustness/missing_modality_robustness_metrics.csv",
+    "input_corruption": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/paper_revision/final_outputs/infofusion_revision_package/05_robustness/input_corruption_robustness_metrics.csv",
+    "label_noise": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/paper_revision/final_outputs/infofusion_revision_package/05_robustness/label_noise_stress_metrics.csv",
+    "failure_cases": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/paper_revision/final_outputs/infofusion_revision_package/08_coe_faithfulness/failure_cases_automatic.csv",
+    "umap_manifest": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/outputs/publishable_v2/if_route_b_submission_pack/source_csv/umap_input_feature_manifest.csv",
+    "shared_lora_ablation_root": "/data2/hmy/VLM_Caus_Rm_Mics/experiments/exp_infofusion_2026/outputs/publishable_v2/shared_lora_biocot/improved_1897/ablations"
+  },
+  "columns": {
+    "patient_id": "patient_id",
+    "case_id": "case_id",
+    "center": "center_name",
+    "cin2_label": "pathology_cin2plus",
+    "cin3_label": "pathology_cin3plus",
+    "score": "prob_cin2plus"
+  },
+  "primary_protocol": "strict five-fold LOCO",
+  "can_reconstruct_strict_loco": true,
+  "invasive_cancer_label_available": false
+}

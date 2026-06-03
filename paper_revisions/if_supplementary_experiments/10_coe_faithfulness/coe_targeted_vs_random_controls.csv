@@ -1,0 +1,4 @@
+﻿control_type,n_conditions,n_patient_condition_rows,valid_delta_rows,mean_abs_delta_pred_score,status,notes
+none,0,0,0,,REFERENCE_ONLY,Targeted-vs-random contrast is not executable without intervened logits.
+random,5,9485,0,,NOT_ESTABLISHED,Targeted-vs-random contrast is not executable without intervened logits.
+targeted,6,11382,0,,NOT_ESTABLISHED,Targeted-vs-random contrast is not executable without intervened logits.

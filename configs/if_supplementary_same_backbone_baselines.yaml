@@ -1,0 +1,60 @@
+experiment_name: if_supplementary_same_backbone_baselines
+primary_protocol: strict_five_fold_loco
+analytic_cohort: outputs/publishable_v2/data_lock/data_lock_n1897.csv
+locked_test_predictions: outputs/publishable_v2/step2_main_loco/predictions/patient_level_predictions_all_models.csv
+locked_validation_predictions: outputs/publishable_v2/step2_main_loco/predictions/validation_predictions_all_models.csv
+feature_cache: outputs/publishable_v2/step2_main_loco/audit/step2_locked_feature_arrays.npz
+output_dir: paper_revisions/if_supplementary_experiments/04_same_backbone_fusion_baselines
+
+rules:
+  target_labels_used_for_training: false
+  target_labels_used_for_threshold_selection: false
+  patient_level_metrics_only: true
+  do_not_mix_fixed_external_with_loco: true
+
+required_variants:
+  - same_backbone_clinical_only
+  - same_backbone_colpo_only
+  - same_backbone_oct_only
+  - same_backbone_early_concat
+  - same_backbone_late_score_fusion
+  - same_backbone_cross_attention
+  - same_backbone_gated_fusion
+  - same_backbone_reliability_without_coe
+  - same_backbone_coe_without_reliability
+  - same_backbone_hydra_full
+
+currently_recovered_from_locked_predictions:
+  same_backbone_clinical_only:
+    - ClinicalOnly_Logistic
+    - ClinicalOnly_XGBoost
+  same_backbone_colpo_only:
+    - ColposcopyOnly_ViT
+  same_backbone_oct_only:
+    - OCTOnly_ViT
+  same_backbone_early_concat:
+    - ColposcopyOCT_EarlyConcat
+  same_backbone_late_score_fusion:
+    - ColposcopyOCT_LateFusion
+  same_backbone_cross_attention:
+    - ColposcopyOCTText_CrossAttention
+  same_backbone_hydra_full:
+    - HyDRA_CoE_Full
+
+currently_recovered_from_shared_lora_ablation_predictions:
+  same_backbone_hydra_full:
+    - g1
+    - best
+  same_backbone_reliability_without_coe:
+    - no_coe
+    - no_center_reliability
+  same_backbone_coe_without_reliability:
+    - no_variational
+  same_backbone_gated_fusion:
+    - no_cross_attn
+
+missing_exact_controls:
+  note: >
+    Exact same-backbone controls are only partially available. New training is
+    required to guarantee identical encoders, optimizer, schedule, cohort, and
+    fold-wise model selection for every requested variant.

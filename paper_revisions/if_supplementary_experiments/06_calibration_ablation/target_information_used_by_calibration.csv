@@ -1,0 +1,6 @@
+﻿calibration_variant,uses_target_labels,uses_unlabeled_target_distribution
+no_calibration,False,False
+threshold_lock_only,False,False
+temperature_scaling_val_only,False,False
+logit_median_matching_target_unlabeled,False,True
+full_hydra_calibration,False,True

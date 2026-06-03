@@ -1,0 +1,6 @@
+﻿center,center_display,n,cin2_pos,cin3_pos,oct_available_n,colposcopy_available_n,clinical_prior_available_n,cin2_prevalence,cin3_prevalence
+十堰市人民医院,Shiyan,496,28,4,496,496,496,0.056451612903225805,0.008064516129032258
+恩施州中心医院,Enshi,406,130,64,406,406,406,0.32019704433497537,0.15763546798029557
+武大人民医院,Wuhan Renmin,89,89,49,89,89,89,1.0,0.550561797752809
+荆州市第一人民医院,Jingzhou,406,37,13,406,406,406,0.09113300492610837,0.03201970443349754
+襄阳市中心医院,Xiangyang,500,110,61,500,500,500,0.22,0.122
