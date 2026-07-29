@@ -1,0 +1,41 @@
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+.DS_Store
+
+# Environments and local runtimes
+.venv/
+venv/
+.uv-cache/
+third_party/
+
+# Patient data and generated artifacts
+data/
+outputs/
+logs/
+results/
+checkpoints/
+visualization/
+figures/
+Fig/
+final_result/
+*.csv
+*.xlsx
+*.xls
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Manuscript and rendered artifacts are released separately.
+paper_revisions/
+*.tex
+*.pdf
+*.doc
+*.docx
+
+# Local research orchestration logs are not part of the code release.
+auto_research/**/logs/

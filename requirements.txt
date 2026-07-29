@@ -1,0 +1,11 @@
+ftfy==6.3.1
+huggingface-hub==0.36.0
+numpy
+open-clip-torch==2.23.0
+pandas
+Pillow
+scikit-learn
+timm==0.9.16
+torch==2.3.1
+torchvision==0.18.1
+transformers==4.57.6
